@@ -1,12 +1,12 @@
 {
   "name": "modular-dashboard",
-  "version": "3.5.12",
+  "version": "3.5.14",
   "description": "Retro-terminal dashboard with drag-and-drop JS-module plugins",
   "author": {
     "name": "chrisalt224",
     "email": "chrisalt224@hotmail.com"
   },
-  "main": "main.js",,
+  "main": "main.js",
   "scripts": {
     "start": "electron .",
     "package": "electron-builder",
