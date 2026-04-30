@@ -29,6 +29,8 @@
     accent: null,       // optional hex — overrides theme accent
     bg: null,           // optional hex — overrides theme background
     fg: null,           // optional hex — overrides theme foreground
+    greeting: '',           // shown large in the empty grid; blank = no text shown
+    greetingEnabled: false, // master toggle — off by default
   };
   const CUSTOM_THEMES_KEY = 'dashboard:customThemes:v1';
   const MAX_CUSTOM_THEMES = 3;
@@ -196,6 +198,17 @@
     localStorage.setItem(LAYOUT_KEY, JSON.stringify(layout));
   }
 
+  // Plugins listed here get auto-flowed first, so on a fresh install (or any
+  // time a new plugin id appears) they end up at the top of the grid before
+  // alphabetically-earlier neighbors get a chance to fill the prime real
+  // estate. Order in this array = placement order.
+  const PLUGIN_PLACEMENT_PRIORITY = ['servers'];
+
+  function placementPriority(id) {
+    const idx = PLUGIN_PLACEMENT_PRIORITY.indexOf(id);
+    return idx === -1 ? 1000 : idx;
+  }
+
   // Greedy auto-flow placement. Walks row-major, picks first free spot that
   // fits the item's width. Used to migrate `order`-based entries and to
   // place newly-seen plugins.
@@ -262,8 +275,15 @@
         }
 
         // Add brand-new plugins (no entry at all yet).
-        for (const p of plugins) {
-          if (next[p.id]) continue;
+        // Plugins listed in PLUGIN_PLACEMENT_PRIORITY are placed first so
+        // they always end up near the top of the grid on a fresh install.
+        // Everything else falls back to its natural (alphabetical) order
+        // from listPlugins().
+        const newPlugins = plugins
+          .filter((p) => !next[p.id])
+          .slice()
+          .sort((a, b) => placementPriority(a.id) - placementPriority(b.id));
+        for (const p of newPlugins) {
           const w = Math.min(GRID_COLS, p.defaultW || 1);
           const h = p.defaultH || 1;
           const { col, row } = placeNext(placedEntries, w, h);
@@ -1131,6 +1151,27 @@
           value: p.clock12h, onChange: p.onClock12h,
           hint: 'off = 24-hour',
         }),
+        e(Toggle, {
+          label: 'Show greeting on empty dashboard',
+          value: p.greetingEnabled, onChange: p.onGreetingEnabled,
+          hint: 'large welcome text shown when no plugins are open',
+        }),
+        // Disable the input when the toggle is off so it's clear which
+        // setting is the master switch. Persists across devices via the
+        // existing localStorage sync.
+        e('div', { className: 'set-kv' },
+          e('div', { className: 'set-kv-label' }, 'Greeting text'),
+          e('input', {
+            className: 'p-input',
+            type: 'text',
+            value: p.greeting || '',
+            placeholder: 'Welcome back',
+            maxLength: 80,
+            disabled: !p.greetingEnabled,
+            onChange: (ev) => p.onGreeting(ev.target.value),
+            style: { flex: 1, minWidth: 0 },
+          }),
+        ),
       ),
     },
     {
@@ -1184,6 +1225,15 @@
             'Open plugins folder'),
           e('button', { className: 'btn', onClick: p.onReload },
             'Hard reload window'),
+          e('button', {
+            className: 'btn',
+            onClick: async () => {
+              if (!confirm('Forget every saved server (URL + remembered password) on this device?\n\nThis only affects this device — other connected dashboards keep their own lists.')) return;
+              try { await window.dashboard.servers.clearAll(); }
+              catch {}
+            },
+            title: 'wipe saved-servers.bin on this device',
+          }, 'Forget all saved servers'),
         ),
       ),
     },
@@ -1397,20 +1447,6 @@
     );
   }
 
-  // ---------- Empty state ----------
-  function EmptyState({ pluginsPath, onOpen }) {
-    const banner =
-      ' ┌─ NO PLUGINS DETECTED ──────────────────────┐\n' +
-      ' │  drop a .js or .jsx file into ./plugins/   │\n' +
-      ' │  or create a folder with plugin.jsx inside │\n' +
-      ' └────────────────────────────────────────────┘';
-    return e('div', { className: 'empty' },
-      e('pre', null, banner),
-      e('p', null, 'Plugins folder: ', e('code', null, pluginsPath || 'plugins/')),
-      e('p', null, 'See ', e('code', null, 'PLUGINS.md'), ' for the full plugin spec.'),
-      e('button', { className: 'btn', onClick: onOpen }, 'Open plugins folder'),
-    );
-  }
 
   // ---------- Built-in SysDock (taskbar + start menu) ----------
   // Shared localStorage keys — intentionally match the old plugin keys so any
@@ -2571,7 +2607,7 @@
       // the drag/resize affordances are surfaced in the widget hover state.
       !maximizedId && e('header', { className: 'topbar' },
         e('div', { className: 'brand' },
-          e('span', { className: 'brand-mark' }, '◢ DASHBOARD'),
+          e('span', { className: 'brand-mark' }, '◢ DASH'),
           e('span', { className: 'brand-sub' }, 'modular // v' + (version || '…')),
         ),
         e(Clock, { hour12: !!settings.clock12h }),
@@ -2615,6 +2651,10 @@
         onScanlines: (v) => persistSettings({ ...settings, scanlines: v }),
         clock12h: !!settings.clock12h,
         onClock12h: (v) => persistSettings({ ...settings, clock12h: v }),
+        greeting: settings.greeting || '',
+        onGreeting: (v) => persistSettings({ ...settings, greeting: v }),
+        greetingEnabled: !!settings.greetingEnabled,
+        onGreetingEnabled: (v) => persistSettings({ ...settings, greetingEnabled: v }),
         theme: settings.theme || 'retro',
         onTheme: (v) => persistSettings({ ...settings, theme: v }),
         font: settings.font || 'auto',
@@ -2649,7 +2689,10 @@
         ref: gridRef,
       },
         visible.length === 0
-          ? e(EmptyState, { pluginsPath, onOpen: () => window.dashboard.openPluginsFolder() })
+          ? (settings.greetingEnabled && (settings.greeting || '').trim()
+              ? e('div', { className: 'greeting' },
+                  e('span', { className: 'greeting-text' }, settings.greeting))
+              : null)
           : [
               ...visible.map((v) => {
                 const transient = resizeRef.current && resizeRef.current.id === v.plugin.id

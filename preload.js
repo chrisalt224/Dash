@@ -222,6 +222,7 @@ contextBridge.exposeInMainWorld('dashboard', {
     save:        (entry) => ipcRenderer.invoke('servers:save', entry),
     delete:      (id) => ipcRenderer.invoke('servers:delete', id),
     getPassword: (id) => ipcRenderer.invoke('servers:getPassword', id),
+    clearAll:    () => ipcRenderer.invoke('servers:clearAll'),
   },
 
   // Multi-device sync (driven by the Servers plugin). Connection is owned

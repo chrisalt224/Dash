@@ -1660,6 +1660,27 @@ body[data-font="serif"] { --mono: Georgia, 'Iowan Old Style', 'Palatino Linotype
 .accent-row input[type="color"]::-webkit-color-swatch { border: none; border-radius: 2px; }
 .accent-row input[type="color"]::-webkit-color-swatch-wrapper { padding: 0; border-radius: 2px; }
 
+/* ---------- Greeting (shown in empty grid when enabled in Settings → Display) ---------- */
+.greeting {
+  grid-column: 1 / -1;          /* span the whole grid */
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 50vh;
+  pointer-events: none;          /* don't block click-through to grid */
+  user-select: none;
+}
+.greeting-text {
+  font-family: var(--mono);
+  font-size: clamp(28px, 6vw, 72px);
+  letter-spacing: 0.06em;
+  color: var(--accent);
+  text-shadow: var(--glow);
+  text-align: center;
+  max-width: 90%;
+  word-break: break-word;
+}
+
 /* ---------- Notification badge dot (auto-update available) ---------- */
 .sm-mode-settings.has-badge,
 .set-nav-item.has-badge {

@@ -71,9 +71,18 @@ function writeWindowState(patch) {
 // skinMode: false as the default — subsequent launches read whatever the
 // user toggled to via setSkinMode(). The seeded marker prevents this from
 // re-running and clobbering the user's later choice.
+//
+// On Windows, uninstalling Dashboard doesn't remove %APPDATA%/Dashboard, so
+// without this scrub a fresh install would inherit the previous user's saved
+// server credentials. We wipe saved-servers.bin on definitive first run so
+// new installs always start with no remembered hubs.
 function seedFirstRunDefaultsIfNeeded() {
   const cur = readWindowState();
   if (cur.firstRunSeeded) return;
+
+  const serversFile = path.join(app.getPath('userData'), 'saved-servers.bin');
+  try { fs.unlinkSync(serversFile); } catch { /* not present — fine */ }
+
   writeWindowState({
     skinMode: false,
     firstRunSeeded: true,
@@ -568,6 +577,14 @@ ipcMain.handle('servers:delete', (_e, id) => {
 ipcMain.handle('servers:getPassword', (_e, id) => {
   const s = readSavedServers().find((x) => x.id === id);
   return s ? (s.password || '') : '';
+});
+
+// Wipe every saved server entry from disk. Used by the "forget all" button
+// in Settings → Host. Doesn't touch live connections — main process keeps
+// running until the user hits disconnect.
+ipcMain.handle('servers:clearAll', () => {
+  try { fs.unlinkSync(SERVERS_FILE); } catch {}
+  return [];
 });
 
 // ---------- Sync manager (multi-device localStorage + notes) ----------
