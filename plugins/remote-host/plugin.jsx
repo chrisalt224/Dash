@@ -108,9 +108,28 @@ export default {
         teardownSession('replaced');
         append(`accepting from ${peerName || peerId.slice(0, 6)}`);
 
-        const stream = await navigator.mediaDevices.getDisplayMedia({
-          video: { frameRate: 30 },
+        // Use Electron's legacy chromeMediaSource path instead of getDisplayMedia.
+        // getDisplayMedia in Electron flaked out with a "Not supported" error
+        // when the constraints from the renderer didn't line up with what the
+        // desktopCapturer source could provide. The mandatory-constraint shape
+        // below has worked since Electron 1.x and is the approach Electron's
+        // own desktop-capture docs recommend.
+        const sources = await window.dashboard.remote.listScreens();
+        if (!Array.isArray(sources) || sources.length === 0) {
+          const why = sources && sources.error ? sources.error : 'no screens available';
+          throw new Error('screen list failed: ' + why);
+        }
+        const sourceId = sources[0].id;
+        append(`capturing ${sources[0].name || sourceId}`);
+        const stream = await navigator.mediaDevices.getUserMedia({
           audio: false,
+          video: {
+            mandatory: {
+              chromeMediaSource: 'desktop',
+              chromeMediaSourceId: sourceId,
+              maxFrameRate: 30,
+            },
+          },
         });
         streamRef.current = stream;
 
