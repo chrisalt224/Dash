@@ -1,6 +1,6 @@
-# Dash
+# Modular Dashboard
 
-A Electron + React dashboard with drag-and-drop JS plugins. Auto-starts at Windows login; supports fullscreen + always-on-top so it can act as a persistent skin layered on top of the normal Windows shell.
+A retro-terminal Electron + React dashboard with drag-and-drop JS plugins. Auto-starts at Windows login; supports fullscreen + always-on-top so it can act as a persistent skin layered on top of the normal Windows shell.
 
 ## Run in dev mode
 

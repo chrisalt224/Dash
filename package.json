@@ -1,0 +1,129 @@
+{
+  "name": "modular-dashboard",
+  "version": "3.5.5",
+  "description": "Retro-terminal dashboard with drag-and-drop JS-module plugins",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "electron-builder",
+    "package:win": "electron-builder --win",
+    "package:mac": "electron-builder --mac",
+    "package:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "dependencies": {
+    "@babel/standalone": "^7.25.0",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
+    "electron-updater": "^6.3.9",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "systeminformation": "^5.31.5",
+    "tesseract.js": "^7.0.0"
+  },
+  "build": {
+    "appId": "com.eric.modular-dashboard",
+    "productName": "Dashboard",
+    "directories": {
+      "output": "dist"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "YOUR_GITHUB_USERNAME",
+        "repo": "YOUR_GITHUB_REPO"
+      }
+    ],
+    "files": [
+      "main.js",
+      "preload.js",
+      "activity-logger.js",
+      "activity-server.js",
+      "sync-manager.js",
+      "vault-manager.js",
+      "lib/**/*",
+      "renderer/**/*",
+      "node_modules/**/*",
+      "package.json",
+      "!**/.{md,markdown,txt}",
+      "!**/test/**",
+      "!**/tests/**",
+      "!**/*.map"
+    ],
+    "extraResources": [
+      {
+        "from": "plugins",
+        "to": "plugins-bundled",
+        "filter": [
+          "**/*"
+        ]
+      }
+    ],
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Dashboard"
+    },
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.utilities",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        },
+        {
+          "target": "zip",
+          "arch": [
+            "x64",
+            "arm64"
+          ]
+        }
+      ]
+    },
+    "linux": {
+      "icon": "build/icon.png",
+      "category": "Utility",
+      "target": [
+        {
+          "target": "AppImage",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "deb",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "rpm",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    }
+  }
+}
