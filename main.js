@@ -2341,15 +2341,66 @@ function watchPlugins() {
 async function seedPluginsIfPackaged() {
   if (!app.isPackaged) return;
   await ensurePluginsDir();
-  // If the user's plugins dir is empty, copy the bundled examples in.
-  try {
-    const existing = await fsp.readdir(PLUGINS_DIR);
-    if (existing.length > 0) return;
-  } catch { /* will be created */ }
+  // Merge bundled plugins into userData: copy any bundled plugin folder/file
+  // whose name doesn't already exist in PLUGINS_DIR. Existing entries are
+  // left untouched so user customizations to bundled plugins survive updates.
+  // Use the "Restore bundled plugin" IPC (plugins:restoreBundled) if you want
+  // to overwrite a specific plugin with its bundled version.
   const bundled = path.join(process.resourcesPath, 'plugins-bundled');
-  try { await fsp.cp(bundled, PLUGINS_DIR, { recursive: true }); }
-  catch (err) { console.error('Failed to seed plugins:', err); }
+  let bundledEntries;
+  try { bundledEntries = await fsp.readdir(bundled, { withFileTypes: true }); }
+  catch { return; /* no bundled dir — dev build, or asar layout differs */ }
+  let existing;
+  try { existing = new Set(await fsp.readdir(PLUGINS_DIR)); }
+  catch { existing = new Set(); }
+  let copied = 0;
+  for (const ent of bundledEntries) {
+    if (existing.has(ent.name)) continue;
+    const from = path.join(bundled, ent.name);
+    const to = path.join(PLUGINS_DIR, ent.name);
+    try {
+      await fsp.cp(from, to, { recursive: true });
+      copied++;
+    } catch (err) {
+      console.error('seed plugin', ent.name, 'failed:', err.message);
+    }
+  }
+  if (copied) console.log(`[plugins] seeded ${copied} new bundled plugin(s)`);
 }
+
+// Overwrite a specific user-installed plugin folder with the bundled copy.
+// Used by the "Restore bundled plugin" Settings action so users can pull in
+// upstream fixes to plugins they haven't customized.
+ipcMain.handle('plugins:restoreBundled', async (_e, pluginId) => {
+  if (!app.isPackaged) return { ok: false, error: 'dev build — bundled plugins live in ./plugins' };
+  if (!pluginId || typeof pluginId !== 'string' || /[\\/]/.test(pluginId) || pluginId.startsWith('.')) {
+    return { ok: false, error: 'invalid plugin id' };
+  }
+  const bundled = path.join(process.resourcesPath, 'plugins-bundled', pluginId);
+  const target = path.join(PLUGINS_DIR, pluginId);
+  try {
+    const st = await fsp.stat(bundled);
+    if (!st.isDirectory() && !st.isFile()) return { ok: false, error: 'no bundled copy' };
+  } catch { return { ok: false, error: 'no bundled copy' }; }
+  try {
+    await fsp.rm(target, { recursive: true, force: true });
+    await fsp.cp(bundled, target, { recursive: true });
+    return { ok: true };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+// List which user-installed plugins also exist in the bundled set, so the
+// Settings UI can show a "Restore bundled" action only for those.
+ipcMain.handle('plugins:listBundled', async () => {
+  if (!app.isPackaged) return [];
+  const bundled = path.join(process.resourcesPath, 'plugins-bundled');
+  try {
+    const ents = await fsp.readdir(bundled, { withFileTypes: true });
+    return ents.filter((e) => !e.name.startsWith('.') && !e.name.startsWith('_')).map((e) => e.name);
+  } catch { return []; }
+});
 
 app.whenReady().then(async () => {
   // Auto-grant microphone / media permission so the audio-visualizer plugin

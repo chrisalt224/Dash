@@ -192,15 +192,25 @@ body.no-scanlines .scanlines { display: none; }
   overflow-y: auto;
 
   /* Snap-grid dots — single layer at every cell corner. With gap: 0 the
-   * tile period collapses to (cellW, cellH) and the pattern naturally
-   * lands on every cell corner including the right edge of the grid (no
-   * second layer needed). Tile size is divided by --snap-density so 2×
-   * fills half-cells, 4× quarter-cells, etc.
-   *   cellW = (100% - 44px) / 6     (subtract horizontal padding only)
-   *   cellH = var(--cell-h)         (matches cellW; set live from JS)
+   * tile period collapses to (cellW, cellH) and the pattern lands on every
+   * cell corner including the right edge of the grid. Tile size is divided
+   * by --snap-density so 2× fills half-cells, 4× quarter-cells, etc.
+   *
+   * We use the JS-measured --cell-w / --cell-h directly here (instead of
+   * `(100% - 44px) / 6`). This is important when overflow-y produces a
+   * vertical scrollbar: the JS measurement uses clientWidth (which excludes
+   * the scrollbar gutter) so the pattern matches the layout's actual 1fr
+   * cells exactly. The percentage-based calc gave a slightly larger cell
+   * width when a scrollbar was present, pushing the rightmost dot column
+   * past the visible cells where it ended up behind the scrollbar / clipped.
+   *
    * `at 0 0` anchors each dot at its tile's top-left so it lands on the
-   * actual cell corner. background-clip: content-box keeps any wrapped
-   * tiles out of the padding strips.
+   * actual cell corner. background-clip: padding-box gives the rightmost
+   * dot the 22px of horizontal padding it needs to fully render — with
+   * content-box clipping the right half of every right-edge dot got masked.
+   * The off-by-one tile to the left/top sits at x = 22 - cellW (far
+   * off-screen at any realistic cell size), so the widened clip doesn't
+   * expose unwanted dots elsewhere.
    */
   background-image: radial-gradient(
     circle var(--snap-dot-size, 2px) at 0 0,
@@ -208,12 +218,15 @@ body.no-scanlines .scanlines { display: none; }
     transparent 51%
   );
   background-size:
-    calc(((100% - 44px) / 6) / var(--snap-density, 1))
+    calc(var(--cell-w, ((100% - 44px) / 6)) / var(--snap-density, 1))
     calc(var(--cell-h, 200px) / var(--snap-density, 1));
   background-position: 22px 18px;
   background-repeat: repeat;
   background-attachment: local;
-  background-clip: content-box;
+  background-clip: padding-box;
+  /* Reserve a stable scrollbar gutter so showing/hiding the scrollbar
+   * doesn't reflow cellW (which would jiggle the dots and the layout). */
+  scrollbar-gutter: stable;
 }
 /* Hide dots in maximized mode — only the maximized widget is shown, no grid */
 .grid.grid--maximized {

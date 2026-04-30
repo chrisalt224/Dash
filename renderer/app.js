@@ -2470,12 +2470,19 @@
     //   --cell-w: column width in px (mirrors what CSS grid 1fr produces)
     //   --cell-h: row height in px (= cellW, makes cells square)
     // Resize/drag math reads these via getComputedStyle so it stays in sync.
+    //
+    // Use clientWidth (not getBoundingClientRect.width) so we *exclude* the
+    // vertical scrollbar gutter from the calculation. With overflow-y: auto a
+    // scrollbar takes ~17px out of the available content area; if we counted
+    // it in cellW we'd compute cells slightly too wide, the snap-grid dots
+    // would land past the rightmost column, and the rightmost dot column
+    // would visually disappear behind the right padding / scrollbar.
     useEffect(() => {
       const el = gridRef.current;
       if (!el) return;
       const PAD_X = 22;
       const update = () => {
-        const w = el.getBoundingClientRect().width;
+        const w = el.clientWidth;
         if (!w) return;
         const cellW = (w - 2 * PAD_X - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
         document.body.style.setProperty('--cell-w', cellW + 'px');

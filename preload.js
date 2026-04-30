@@ -32,6 +32,10 @@ contextBridge.exposeInMainWorld('dashboard', {
   readPlugin: (path) => ipcRenderer.invoke('plugins:read', path),
   openPluginsFolder: () => ipcRenderer.invoke('plugins:openFolder'),
   pluginsDirPath: () => ipcRenderer.invoke('plugins:dirPath'),
+  // Bundled plugins shipped with the app — list them, and overwrite a single
+  // user-installed plugin with its bundled copy (e.g., to pull in a fix).
+  listBundledPlugins: () => ipcRenderer.invoke('plugins:listBundled'),
+  restoreBundledPlugin: (id) => ipcRenderer.invoke('plugins:restoreBundled', id),
   onPluginsChanged: (cb) => {
     const handler = () => cb();
     ipcRenderer.on('plugins:changed', handler);
