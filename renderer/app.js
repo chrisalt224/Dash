@@ -2572,7 +2572,7 @@
       !maximizedId && e('header', { className: 'topbar' },
         e('div', { className: 'brand' },
           e('span', { className: 'brand-mark' }, '◢ DASHBOARD'),
-          e('span', { className: 'brand-sub' }, 'modular // v2.0'),
+          e('span', { className: 'brand-sub' }, 'modular // v' + (version || '…')),
         ),
         e(Clock, { hour12: !!settings.clock12h }),
       ),

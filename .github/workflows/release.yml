@@ -1,0 +1,65 @@
+# Release pipeline.
+#
+# Trigger: push a tag matching v* (e.g. `git tag v3.5.8 && git push --tags`).
+# Three runners (Linux, Windows, macOS) build in parallel and append their
+# installer + electron-updater manifest to the SAME draft GitHub release.
+#
+# Auth: uses the auto-provisioned GITHUB_TOKEN — no secrets to manage. The
+# `permissions: contents: write` block grants it the right to create/edit
+# releases on this repo.
+#
+# After all three jobs finish, open https://github.com/chrisalt224/Dash/releases,
+# find the draft for the tag, and click "Publish release". electron-updater
+# only sees published (non-draft) releases.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  # Manual trigger for re-runs without retagging — useful when a single OS
+  # job fails and you want to retry just that one.
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false   # one OS failing shouldn't cancel the others
+      matrix:
+        include:
+          - os: ubuntu-latest
+            cmd: package:linux
+          - os: windows-latest
+            cmd: package:win
+          - os: macos-latest
+            cmd: package:mac
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build & publish
+        env:
+          # electron-builder reads GH_TOKEN to upload to the GitHub release.
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Don't try to auto-discover a code-signing identity. Without paid
+          # certs the build would fail on macOS; this lets it produce an
+          # unsigned .dmg that installs (with a Gatekeeper warning) but does
+          # NOT auto-update — Mac auto-update needs signing + notarization.
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+        run: npm run ${{ matrix.cmd }} -- --publish always

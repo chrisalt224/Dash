@@ -1,6 +1,6 @@
 {
   "name": "modular-dashboard",
-  "version": "3.5.5",
+  "version": "3.5.9",
   "description": "Retro-terminal dashboard with drag-and-drop JS-module plugins",
   "main": "main.js",
   "scripts": {
@@ -33,8 +33,8 @@
     "publish": [
       {
         "provider": "github",
-        "owner": "YOUR_GITHUB_USERNAME",
-        "repo": "YOUR_GITHUB_REPO"
+        "owner": "chrisalt224",
+        "repo": "Dash"
       }
     ],
     "files": [
