@@ -67,6 +67,12 @@ export default {
     const pcRef = useRef(null);
     const dcRef = useRef(null);
     const streamRef = useRef(null);
+    // Timer for the "disconnected → wait for recovery → tear down" grace
+    // period. WebRTC routinely flickers to `disconnected` for a second or
+    // two during ICE consent-freshness checks; tearing down immediately
+    // guarantees a session lifetime of just a few seconds.
+    const disconnectGraceRef = useRef(null);
+    const DISCONNECT_GRACE_MS = 8000;
     useEffect(() => { enabledRef.current = enabled; }, [enabled]);
     useEffect(() => { autoAcceptRef.current = autoAccept; }, [autoAccept]);
     useEffect(() => { allowInputRef.current = allowInput; }, [allowInput]);
@@ -83,6 +89,10 @@ export default {
       if (cur) {
         send(cur.peerId, 'end', { reason: reason || 'host-ended' }).catch(() => {});
         append(`session ended (${reason || 'host-ended'})`);
+      }
+      if (disconnectGraceRef.current) {
+        clearTimeout(disconnectGraceRef.current);
+        disconnectGraceRef.current = null;
       }
       try { dcRef.current && dcRef.current.close(); } catch {}
       try { pcRef.current && pcRef.current.close(); } catch {}
@@ -104,7 +114,12 @@ export default {
         });
         streamRef.current = stream;
 
-        const pc = new RTCPeerConnection({ iceServers: [] });
+        const pc = new RTCPeerConnection({
+          iceServers: [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' },
+          ],
+        });
         pcRef.current = pc;
 
         for (const track of stream.getTracks()) pc.addTrack(track, stream);
@@ -137,9 +152,31 @@ export default {
           }
         };
         pc.onconnectionstatechange = () => {
-          append('pc state: ' + pc.connectionState);
-          if (['failed', 'closed', 'disconnected'].includes(pc.connectionState)) {
-            teardownSession(pc.connectionState);
+          const st = pc.connectionState;
+          append('pc state: ' + st);
+          // Clear any pending grace timer if we recover.
+          if (st === 'connected' && disconnectGraceRef.current) {
+            clearTimeout(disconnectGraceRef.current);
+            disconnectGraceRef.current = null;
+            append('connection recovered');
+          }
+          // Hard failures: tear down immediately.
+          if (st === 'failed' || st === 'closed') {
+            teardownSession(st);
+            return;
+          }
+          // Soft transient: WebRTC routinely flickers to `disconnected` for
+          // a couple seconds during ICE consent-freshness checks. Wait it
+          // out — only tear down if we don't recover within the grace window.
+          if (st === 'disconnected') {
+            if (disconnectGraceRef.current) clearTimeout(disconnectGraceRef.current);
+            disconnectGraceRef.current = setTimeout(() => {
+              disconnectGraceRef.current = null;
+              if (pcRef.current === pc && pc.connectionState === 'disconnected') {
+                append('disconnect did not recover, ending');
+                teardownSession('disconnect-timeout');
+              }
+            }, DISCONNECT_GRACE_MS);
           }
         };
 

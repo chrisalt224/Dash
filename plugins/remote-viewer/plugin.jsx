@@ -96,6 +96,10 @@ export default {
     const remoteStreamRef = useRef(null);
     const videoRef = useRef(null);
     const wrapRef = useRef(null);
+    // Grace timer for transient `disconnected` states — see remote-host for
+    // the rationale. We only tear down if disconnect persists past the grace.
+    const disconnectGraceRef = useRef(null);
+    const DISCONNECT_GRACE_MS = 8000;
     const sendInputRef = useRef(sendInput);
     useEffect(() => { deviceIdRef.current = deviceId; }, [deviceId]);
     useEffect(() => { targetRef.current = target; }, [target]);
@@ -106,6 +110,10 @@ export default {
       if (cur && cur.peerId && cur.status !== 'idle') {
         send(cur.peerId, 'end', { reason: reason || 'viewer-ended' }).catch(() => {});
         append(`disconnected (${reason || 'viewer-ended'})`);
+      }
+      if (disconnectGraceRef.current) {
+        clearTimeout(disconnectGraceRef.current);
+        disconnectGraceRef.current = null;
       }
       try { dcRef.current && dcRef.current.close(); } catch {}
       try { pcRef.current && pcRef.current.close(); } catch {}
@@ -185,7 +193,12 @@ export default {
         if (t === 'offer') {
           // Build the PC now, on offer arrival.
           try {
-            const pc = new RTCPeerConnection({ iceServers: [] });
+            const pc = new RTCPeerConnection({
+              iceServers: [
+                { urls: 'stun:stun.l.google.com:19302' },
+                { urls: 'stun:stun1.l.google.com:19302' },
+              ],
+            });
             pcRef.current = pc;
             pc.ontrack = (e) => {
               remoteStreamRef.current = e.streams[0] || new MediaStream([e.track]);
@@ -204,12 +217,33 @@ export default {
               });
             };
             pc.onconnectionstatechange = () => {
-              append('pc state: ' + pc.connectionState);
-              if (pc.connectionState === 'connected') {
+              const st = pc.connectionState;
+              append('pc state: ' + st);
+              if (st === 'connected') {
                 setTarget((prev) => prev ? { ...prev, status: 'connected', startedAt: Date.now() } : prev);
+                if (disconnectGraceRef.current) {
+                  clearTimeout(disconnectGraceRef.current);
+                  disconnectGraceRef.current = null;
+                  append('connection recovered');
+                }
               }
-              if (['failed', 'disconnected', 'closed'].includes(pc.connectionState)) {
-                teardown(pc.connectionState);
+              // Hard failures: tear down immediately.
+              if (st === 'failed' || st === 'closed') {
+                teardown(st);
+                return;
+              }
+              // Soft transient: WebRTC routinely flickers to `disconnected`
+              // for a couple seconds during ICE consent-freshness checks.
+              // Wait it out before tearing down.
+              if (st === 'disconnected') {
+                if (disconnectGraceRef.current) clearTimeout(disconnectGraceRef.current);
+                disconnectGraceRef.current = setTimeout(() => {
+                  disconnectGraceRef.current = null;
+                  if (pcRef.current === pc && pc.connectionState === 'disconnected') {
+                    append('disconnect did not recover, ending');
+                    teardown('disconnect-timeout');
+                  }
+                }, DISCONNECT_GRACE_MS);
               }
             };
             await pc.setRemoteDescription({ type: 'offer', sdp: payload.sdp });
