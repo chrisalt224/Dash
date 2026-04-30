@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Dashboard</title>
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'self'; script-src 'self' 'unsafe-eval' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; img-src 'self' data: file:; media-src 'self' blob: data:; connect-src 'self' http: https: ws: wss:;" />
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="../node_modules/@xterm/xterm/css/xterm.css" />
+  <script src="../node_modules/react/umd/react.development.js"></script>
+  <script src="../node_modules/react-dom/umd/react-dom.development.js"></script>
+  <script src="../node_modules/@babel/standalone/babel.min.js"></script>
+  <!-- xterm.js — exposes window.Terminal -->
+  <script src="../node_modules/@xterm/xterm/lib/xterm.js"></script>
+  <!-- exposes window.FitAddon.FitAddon -->
+  <script src="../node_modules/@xterm/addon-fit/lib/addon-fit.js"></script>
+  <!-- tesseract.js — exposes window.Tesseract (used by invoice-ocr plugin) -->
+  <script src="../node_modules/tesseract.js/dist/tesseract.min.js"></script>
+</head>
+<body>
+  <div id="root"></div>
+  <div class="scanlines"></div>
+  <!-- Wraps window.localStorage in the main world so writes from React /
+       plugins / DevTools are mirrored to the host (activity log + sync).
+       Must load before app.js / plugins. -->
+  <script src="storage-mirror.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
