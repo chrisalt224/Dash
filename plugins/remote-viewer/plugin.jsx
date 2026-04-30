@@ -9,6 +9,7 @@
 
 const LAST_PEER_KEY = 'plugin:remote-viewer:lastPeer:v1';
 const SEND_INPUT_KEY = 'plugin:remote-viewer:sendInput:v1';
+const AUDIO_ON_KEY = 'plugin:remote-viewer:audioOn:v1';
 
 // KeyboardEvent.code → Win32 virtual-key code. Covers the common keys that
 // matter for everyday remote-control use; rare keys fall back to keyCode.
@@ -60,9 +61,13 @@ export default {
     const [target, setTarget] = useState(null); // { peerId, peerName, status, error, startedAt? }
     const [sendInput, setSendInput] = useState(() => localStorage.getItem(SEND_INPUT_KEY) !== '0');
     const [lastPeer, setLastPeer] = useState(() => localStorage.getItem(LAST_PEER_KEY) || null);
+    const [audioOn, setAudioOn] = useState(() => localStorage.getItem(AUDIO_ON_KEY) === '1');
+    const [showLog, setShowLog] = useState(false);
+    const [isFullscreen, setIsFullscreen] = useState(false);
     const [log, setLog] = useState([]);
 
     useEffect(() => { localStorage.setItem(SEND_INPUT_KEY, sendInput ? '1' : '0'); }, [sendInput]);
+    useEffect(() => { localStorage.setItem(AUDIO_ON_KEY, audioOn ? '1' : '0'); }, [audioOn]);
     useEffect(() => {
       if (lastPeer) localStorage.setItem(LAST_PEER_KEY, lastPeer);
       else localStorage.removeItem(LAST_PEER_KEY);
@@ -96,6 +101,10 @@ export default {
     const remoteStreamRef = useRef(null);
     const videoRef = useRef(null);
     const wrapRef = useRef(null);
+    // Fullscreen target: the container around the <video>. Going fullscreen
+    // here (not the video itself) keeps our overlay buttons + status pill in
+    // the fullscreen layer so the user can exit / mute without pressing Esc.
+    const stageRef = useRef(null);
     // Grace timer for transient `disconnected` states — see remote-host for
     // the rationale. We only tear down if disconnect persists past the grace.
     const disconnectGraceRef = useRef(null);
@@ -281,6 +290,43 @@ export default {
 
     useEffect(() => () => { teardown('unmount'); }, [teardown]);
 
+    // ---- fullscreen ----
+    // Drive fullscreen off the stage container (not the <video>) so our
+    // overlay buttons + status pill remain in the fullscreen layer. The
+    // browser fires `fullscreenchange` on document when state flips, even
+    // if the user pressed Esc to exit, so we mirror it into local state.
+    useEffect(() => {
+      const onChange = () => {
+        const fs = document.fullscreenElement;
+        setIsFullscreen(!!(fs && stageRef.current && (fs === stageRef.current || stageRef.current.contains(fs))));
+      };
+      document.addEventListener('fullscreenchange', onChange);
+      return () => document.removeEventListener('fullscreenchange', onChange);
+    }, []);
+
+    const toggleFullscreen = useCallback(async () => {
+      try {
+        if (!document.fullscreenElement) {
+          if (stageRef.current && stageRef.current.requestFullscreen) {
+            await stageRef.current.requestFullscreen();
+          }
+        } else if (document.exitFullscreen) {
+          await document.exitFullscreen();
+        }
+      } catch (err) { append('fullscreen failed: ' + err.message); }
+    }, [append]);
+
+    // ---- audio mute mirror ----
+    // Native <video> playback starts muted to satisfy the autoplay policy;
+    // toggling audioOn flips the muted attribute. Keep volume = 1 either way.
+    useEffect(() => {
+      const v = videoRef.current;
+      if (!v) return;
+      v.muted = !audioOn;
+      v.volume = 1;
+      if (audioOn) v.play().catch(() => {});
+    }, [audioOn, target && target.status]);
+
     // ---- input capture on the video element ----
     const sendInputCmd = useCallback((cmd) => {
       const dc = dcRef.current;
@@ -288,26 +334,53 @@ export default {
       try { dc.send(JSON.stringify(cmd)); } catch {}
     }, []);
 
+    // Map a clientX/Y inside the <video> element to normalized (0..1)
+    // coordinates of the actual video CONTENT, accounting for the letterbox
+    // bars produced by `object-fit: contain` when the element's aspect
+    // doesn't match the stream's intrinsic aspect. Without this, clicks in
+    // the letterbox bars get mapped to off-screen positions on the remote.
+    // Returns null when the cursor is in the letterbox area.
+    const videoContentCoords = (clientX, clientY) => {
+      const v = videoRef.current;
+      if (!v) return null;
+      const r = v.getBoundingClientRect();
+      const vw = v.videoWidth, vh = v.videoHeight;
+      if (!vw || !vh || !r.width || !r.height) return null;
+      const elementAspect = r.width / r.height;
+      const videoAspect = vw / vh;
+      let contentW, contentH, offsetX, offsetY;
+      if (videoAspect > elementAspect) {
+        // Letterbox top + bottom
+        contentW = r.width;
+        contentH = r.width / videoAspect;
+        offsetX = 0;
+        offsetY = (r.height - contentH) / 2;
+      } else {
+        // Pillarbox left + right
+        contentH = r.height;
+        contentW = r.height * videoAspect;
+        offsetX = (r.width - contentW) / 2;
+        offsetY = 0;
+      }
+      const localX = clientX - r.left - offsetX;
+      const localY = clientY - r.top - offsetY;
+      if (localX < 0 || localX > contentW || localY < 0 || localY > contentH) return null;
+      return { x: localX / contentW, y: localY / contentH };
+    };
+
     const onMouseMove = useCallback((ev) => {
       if (!sendInputRef.current) return;
-      const v = videoRef.current;
-      if (!v) return;
-      const r = v.getBoundingClientRect();
-      const x = (ev.clientX - r.left) / r.width;
-      const y = (ev.clientY - r.top) / r.height;
-      if (x < 0 || x > 1 || y < 0 || y > 1) return;
-      sendInputCmd({ t: 'm', x, y });
+      const c = videoContentCoords(ev.clientX, ev.clientY);
+      if (!c) return;
+      sendInputCmd({ t: 'm', x: c.x, y: c.y });
     }, [sendInputCmd]);
 
     const onMouseDown = useCallback((ev) => {
       if (!sendInputRef.current) return;
       ev.preventDefault();
       videoRef.current && videoRef.current.focus();
-      const v = videoRef.current;
-      if (v) {
-        const r = v.getBoundingClientRect();
-        sendInputCmd({ t: 'm', x: (ev.clientX - r.left) / r.width, y: (ev.clientY - r.top) / r.height });
-      }
+      const c = videoContentCoords(ev.clientX, ev.clientY);
+      if (c) sendInputCmd({ t: 'm', x: c.x, y: c.y });
       sendInputCmd({ t: 'd', b: ev.button });
     }, [sendInputCmd]);
 
@@ -353,8 +426,23 @@ export default {
     const isConnected = target && target.status === 'connected';
     const isPending = target && target.status !== 'connected';
 
+    // Floating overlay button style — used for fullscreen / mute / disconnect
+    // pills that sit on top of the video. Pop into view on hover so they
+    // don't compete with the actual remote screen content.
+    const overlayBtn = {
+      background: 'rgba(0,0,0,0.55)',
+      color: 'var(--fg-bright)',
+      border: '1px solid rgba(255,255,255,0.18)',
+      borderRadius: 4,
+      padding: '4px 8px',
+      fontSize: 11,
+      lineHeight: 1,
+      cursor: 'pointer',
+      backdropFilter: 'blur(4px)',
+    };
+
     return (
-      <div ref={wrapRef} className="p-col" style={{ height: '100%', gap: 6, padding: 4 }}>
+      <div ref={wrapRef} className="p-col" style={{ height: '100%', gap: target ? 0 : 6, padding: target ? 0 : 4 }}>
         {!target && (
           <>
             <div className="p-row" style={{ justifyContent: 'space-between' }}>
@@ -402,70 +490,138 @@ export default {
         )}
 
         {target && (
-          <>
-            <div className="p-row" style={{ justifyContent: 'space-between' }}>
-              <div className="p-label">
-                {isConnected ? 'connected' : (isPending ? target.status : 'idle')}
-                <span className="p-accent" style={{ marginLeft: 6 }}>{target.peerName}</span>
-              </div>
-              <div className="p-row" style={{ gap: 6 }}>
-                <label className="p-row" style={{ gap: 4, fontSize: 10, cursor: 'pointer' }}>
-                  <input type="checkbox" checked={sendInput} onChange={(e) => setSendInput(e.target.checked)} />
-                  send input
-                </label>
-                <button className="p-btn" onClick={() => teardown('viewer-ended')}>disconnect</button>
-              </div>
-            </div>
-            <div style={{
+          <div
+            ref={stageRef}
+            className="p-col"
+            style={{
               flex: 1,
               position: 'relative',
-              background: 'var(--bg)',
-              border: '1px solid var(--border-bright)',
-              borderRadius: 4,
+              background: '#000',
+              borderRadius: isFullscreen ? 0 : 4,
+              border: isFullscreen ? 'none' : '1px solid var(--border-bright)',
               overflow: 'hidden',
-            }}>
-              <video
-                ref={videoRef}
-                autoPlay
-                playsInline
-                muted
-                tabIndex={0}
-                onMouseMove={onMouseMove}
-                onMouseDown={onMouseDown}
-                onMouseUp={onMouseUp}
-                onWheel={onWheel}
-                onKeyDown={onKeyDown}
-                onKeyUp={onKeyUp}
-                onContextMenu={onContextMenu}
-                onClick={(e) => e.currentTarget.focus()}
-                style={{
-                  width: '100%', height: '100%',
-                  objectFit: 'contain',
-                  outline: 'none',
-                  cursor: sendInput && isConnected ? 'crosshair' : 'default',
-                }}
-              />
-              {!isConnected && (
-                <div style={{
-                  position: 'absolute', inset: 0,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 11, color: 'var(--fg-dim)',
-                  background: 'rgba(0,0,0,0.4)',
-                  pointerEvents: 'none',
-                }}>
-                  {target.status === 'requesting' && 'waiting for accept…'}
-                  {target.status === 'negotiating' && 'negotiating…'}
-                </div>
-              )}
+              minHeight: 0,
+            }}
+          >
+            <video
+              ref={videoRef}
+              autoPlay
+              playsInline
+              tabIndex={0}
+              onMouseMove={onMouseMove}
+              onMouseDown={onMouseDown}
+              onMouseUp={onMouseUp}
+              onWheel={onWheel}
+              onKeyDown={onKeyDown}
+              onKeyUp={onKeyUp}
+              onContextMenu={onContextMenu}
+              onClick={(e) => e.currentTarget.focus()}
+              style={{
+                width: '100%', height: '100%',
+                objectFit: 'contain',
+                outline: 'none',
+                background: '#000',
+                cursor: sendInput && isConnected ? 'crosshair' : 'default',
+                display: 'block',
+              }}
+            />
+
+            {/* Top overlay bar — peer name + status (left) and controls (right).
+                Auto-hides via CSS hover so it doesn't obscure the remote screen,
+                but stays visible while not yet connected. */}
+            <div
+              className="p-row"
+              style={{
+                position: 'absolute',
+                top: 6, left: 6, right: 6,
+                justifyContent: 'space-between',
+                alignItems: 'center',
+                pointerEvents: 'none',
+                gap: 6,
+                opacity: isConnected ? undefined : 1,
+              }}
+            >
+              <div style={{
+                ...overlayBtn,
+                pointerEvents: 'auto',
+                background: 'rgba(0,0,0,0.55)',
+              }}>
+                <span style={{ color: isConnected ? 'var(--accent)' : 'var(--accent-warm)' }}>●</span>{' '}
+                <span style={{ color: 'var(--fg-bright)' }}>{target.peerName}</span>
+                {!isConnected && <span style={{ color: 'var(--fg-dim)', marginLeft: 6 }}>{target.status}</span>}
+              </div>
+              <div className="p-row" style={{ gap: 4, pointerEvents: 'auto' }}>
+                <button
+                  style={overlayBtn}
+                  title={sendInput ? 'remote input ON — click to pause' : 'remote input OFF — click to enable'}
+                  onClick={() => setSendInput((v) => !v)}>
+                  {sendInput ? '⌨ input on' : '⌨ input off'}
+                </button>
+                <button
+                  style={overlayBtn}
+                  title={audioOn ? 'audio ON — click to mute' : 'audio MUTED — click to enable'}
+                  onClick={() => setAudioOn((v) => !v)}>
+                  {audioOn ? '🔊' : '🔇'}
+                </button>
+                <button
+                  style={overlayBtn}
+                  title="show event log"
+                  onClick={() => setShowLog((v) => !v)}>
+                  ≡
+                </button>
+                <button
+                  style={overlayBtn}
+                  title={isFullscreen ? 'exit fullscreen (Esc)' : 'fullscreen'}
+                  onClick={toggleFullscreen}>
+                  {isFullscreen ? '⤡' : '⛶'}
+                </button>
+                <button
+                  style={{ ...overlayBtn, color: 'var(--danger)' }}
+                  title="disconnect"
+                  onClick={() => teardown('viewer-ended')}>
+                  ×
+                </button>
+              </div>
             </div>
-            <div style={{ fontSize: 10, color: 'var(--fg-dim)', maxHeight: 60, overflowY: 'auto' }}>
-              {log.slice(-6).reverse().map((l, i) => (
-                <div key={l.ts + ':' + i} className="p-mono">
-                  {new Date(l.ts).toLocaleTimeString()} · {l.line}
-                </div>
-              ))}
-            </div>
-          </>
+
+            {/* Connecting curtain — shown only before the stream comes up. */}
+            {!isConnected && (
+              <div style={{
+                position: 'absolute', inset: 0,
+                display: 'flex', alignItems: 'center', justifyContent: 'center',
+                fontSize: 12, color: 'var(--fg-dim)',
+                background: 'rgba(0,0,0,0.55)',
+                pointerEvents: 'none',
+              }}>
+                {target.status === 'requesting' && 'waiting for accept…'}
+                {target.status === 'negotiating' && 'negotiating…'}
+                {target.status === 'reaching' && 'reaching…'}
+              </div>
+            )}
+
+            {/* Log popover — toggled by the ≡ button. */}
+            {showLog && (
+              <div style={{
+                position: 'absolute',
+                left: 6, right: 6, bottom: 6,
+                maxHeight: '40%',
+                overflowY: 'auto',
+                padding: '6px 8px',
+                background: 'rgba(0,0,0,0.7)',
+                border: '1px solid rgba(255,255,255,0.15)',
+                borderRadius: 4,
+                fontSize: 10,
+                color: 'var(--fg-bright)',
+              }}>
+                {log.length === 0 && <div style={{ opacity: 0.5 }}>no events</div>}
+                {log.slice().reverse().map((l, i) => (
+                  <div key={l.ts + ':' + i} className="p-mono" style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                    {new Date(l.ts).toLocaleTimeString()} · {l.line}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
         )}
       </div>
     );

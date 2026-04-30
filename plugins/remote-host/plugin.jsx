@@ -10,6 +10,7 @@
 const ENABLED_KEY = 'plugin:remote-host:enabled:v1';
 const AUTO_ACCEPT_KEY = 'plugin:remote-host:autoAccept:v1';
 const ALLOW_INPUT_KEY = 'plugin:remote-host:allowInput:v1';
+const SHARE_AUDIO_KEY = 'plugin:remote-host:shareAudio:v1';
 
 export default {
   id: 'remote-host',
@@ -20,6 +21,7 @@ export default {
     const [enabled, setEnabled] = useState(() => localStorage.getItem(ENABLED_KEY) === '1');
     const [autoAccept, setAutoAccept] = useState(() => localStorage.getItem(AUTO_ACCEPT_KEY) === '1');
     const [allowInput, setAllowInput] = useState(() => localStorage.getItem(ALLOW_INPUT_KEY) === '1');
+    const [shareAudio, setShareAudio] = useState(() => localStorage.getItem(SHARE_AUDIO_KEY) === '1');
     const [deviceId, setDeviceId] = useState('');
     const [deviceName, setDeviceName] = useState('');
     const [pending, setPending] = useState(null); // { from, fromName }
@@ -30,6 +32,7 @@ export default {
     useEffect(() => { localStorage.setItem(ENABLED_KEY, enabled ? '1' : '0'); }, [enabled]);
     useEffect(() => { localStorage.setItem(AUTO_ACCEPT_KEY, autoAccept ? '1' : '0'); }, [autoAccept]);
     useEffect(() => { localStorage.setItem(ALLOW_INPUT_KEY, allowInput ? '1' : '0'); }, [allowInput]);
+    useEffect(() => { localStorage.setItem(SHARE_AUDIO_KEY, shareAudio ? '1' : '0'); }, [shareAudio]);
 
     const append = useCallback((line) => {
       setLog((prev) => {
@@ -61,6 +64,7 @@ export default {
     const enabledRef = useRef(enabled);
     const autoAcceptRef = useRef(autoAccept);
     const allowInputRef = useRef(allowInput);
+    const shareAudioRef = useRef(shareAudio);
     const deviceIdRef = useRef(deviceId);
     const deviceNameRef = useRef(deviceName);
     const sessionRef = useRef(session);
@@ -76,6 +80,7 @@ export default {
     useEffect(() => { enabledRef.current = enabled; }, [enabled]);
     useEffect(() => { autoAcceptRef.current = autoAccept; }, [autoAccept]);
     useEffect(() => { allowInputRef.current = allowInput; }, [allowInput]);
+    useEffect(() => { shareAudioRef.current = shareAudio; }, [shareAudio]);
     useEffect(() => { deviceIdRef.current = deviceId; }, [deviceId]);
     useEffect(() => { deviceNameRef.current = deviceName; }, [deviceName]);
     useEffect(() => { sessionRef.current = session; }, [session]);
@@ -121,8 +126,16 @@ export default {
         }
         const sourceId = sources[0].id;
         append(`capturing ${sources[0].name || sourceId}`);
-        const stream = await navigator.mediaDevices.getUserMedia({
-          audio: false,
+        // System-audio loopback only works via chromeMediaSource on Windows in
+        // Electron. mac/Linux silently fail (or throw) so we drop audio there
+        // and warn in the log. The viewer will play whatever audio track it
+        // does receive — if there's no track, it's silent.
+        const isWin = injector.platform === 'win32' || (typeof navigator !== 'undefined' && /Win/.test(navigator.platform));
+        const wantAudio = shareAudioRef.current && isWin;
+        const constraints = {
+          audio: wantAudio ? {
+            mandatory: { chromeMediaSource: 'desktop' },
+          } : false,
           video: {
             mandatory: {
               chromeMediaSource: 'desktop',
@@ -130,8 +143,27 @@ export default {
               maxFrameRate: 30,
             },
           },
-        });
+        };
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } catch (err) {
+          // If audio capture failed, retry without audio so the session still
+          // comes up with video-only.
+          if (wantAudio) {
+            append('audio capture failed (' + err.message + '), retrying video-only');
+            stream = await navigator.mediaDevices.getUserMedia({
+              audio: false,
+              video: constraints.video,
+            });
+          } else {
+            throw err;
+          }
+        }
         streamRef.current = stream;
+        const audioTracks = stream.getAudioTracks();
+        if (wantAudio && audioTracks.length === 0) append('audio requested but no audio track in stream');
+        else if (audioTracks.length > 0) append('streaming with audio');
 
         const pc = new RTCPeerConnection({
           iceServers: [
@@ -361,6 +393,17 @@ export default {
           {allowInput && injector.platform !== 'win32' && (
             <div style={{ fontSize: 10, color: 'var(--accent-warm)' }}>
               ! input injection is Windows-only (this is {injector.platform})
+            </div>
+          )}
+          <label className="p-row" style={{ gap: 6, fontSize: 11, cursor: 'pointer', opacity: enabled ? 1 : 0.4 }}>
+            <input
+              type="checkbox" disabled={!enabled}
+              checked={shareAudio} onChange={(e) => setShareAudio(e.target.checked)} />
+            share system audio
+          </label>
+          {shareAudio && injector.platform !== 'win32' && (
+            <div style={{ fontSize: 10, color: 'var(--accent-warm)' }}>
+              ! system-audio capture is Windows-only (this is {injector.platform})
             </div>
           )}
         </div>
