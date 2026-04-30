@@ -53,6 +53,12 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Generate Linux icon (PNG from ICO)
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update && sudo apt-get install -y imagemagick
+          convert build/icon.ico[-1] -resize 512x512 build/icon.png
+
       - name: Build & publish
         env:
           # electron-builder reads GH_TOKEN to upload to the GitHub release.
