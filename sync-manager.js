@@ -68,6 +68,10 @@ const DEFAULT_DENY_PATTERNS = [
   // Sync infra — server connections, saved server view state, etc.
   'plugin:servers:',
 
+  // Remote-control plugins — consent, selected device, session ids are local
+  'plugin:remote-host:',
+  'plugin:remote-viewer:',
+
   // Cognicore: ephemeral per-device UI state (which note is open, which
   // folders are expanded, which sidebar tab is active). Files themselves
   // sync via the central 'cognicore' vault, not localStorage.

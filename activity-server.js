@@ -446,14 +446,14 @@ class ActivityServer {
           const raw = await this.readBody(req, 4 * 1024 * 1024);
           const o = raw ? JSON.parse(raw) : {};
           if (typeof o.path !== 'string' || !o.path) return this.send(res, 400, { error: 'path required' });
-          await v.write(vaultName, o.path, typeof o.content === 'string' ? o.content : '');
+          await v.write(vaultName, o.path, typeof o.content === 'string' ? o.content : '', o.device);
           return this.send(res, 200, { ok: true });
         }
         if (op === 'mkdir' && method === 'POST') {
           const raw = await this.readBody(req, 32 * 1024);
           const o = raw ? JSON.parse(raw) : {};
           if (typeof o.path !== 'string' || !o.path) return this.send(res, 400, { error: 'path required' });
-          await v.mkdir(vaultName, o.path);
+          await v.mkdir(vaultName, o.path, o.device);
           return this.send(res, 200, { ok: true });
         }
         if (op === 'rename' && method === 'POST') {
@@ -462,14 +462,14 @@ class ActivityServer {
           if (typeof o.from !== 'string' || !o.from || typeof o.to !== 'string' || !o.to) {
             return this.send(res, 400, { error: 'from/to required' });
           }
-          await v.rename(vaultName, o.from, o.to);
+          await v.rename(vaultName, o.from, o.to, o.device);
           return this.send(res, 200, { ok: true });
         }
         if (op === 'delete' && method === 'POST') {
           const raw = await this.readBody(req, 32 * 1024);
           const o = raw ? JSON.parse(raw) : {};
           if (typeof o.path !== 'string' || !o.path) return this.send(res, 400, { error: 'path required' });
-          await v.delete(vaultName, o.path);
+          await v.delete(vaultName, o.path, o.device);
           return this.send(res, 200, { ok: true });
         }
         return this.send(res, 404, { error: 'unknown vault op' });

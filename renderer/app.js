@@ -3,11 +3,14 @@
   const e = React.createElement;
 
   // Must match CSS values in styles.css
-  const GRID_COLS = 4;
+  const GRID_COLS = 6;
+  // CELL_HEIGHT is the *fallback* row height. Live row height is set by the
+  // ResizeObserver in App() to match the current cellWidth, so cells are
+  // always square. Resize/drag math reads the live value off the grid.
   const CELL_HEIGHT = 200;
-  const GRID_GAP = 14;
+  const GRID_GAP = 0;
   const MIN_W = 1, MAX_W = GRID_COLS;
-  const MIN_H = 1, MAX_H = 8;
+  const MIN_H = 1, MAX_H = 12;
 
   const LAYOUT_KEY = 'dashboard:layout:v1';
   const SETTINGS_KEY = 'dashboard:settings:v1';
@@ -29,8 +32,12 @@
     accent: null,       // optional hex — overrides theme accent
     bg: null,           // optional hex — overrides theme background
     fg: null,           // optional hex — overrides theme foreground
-    greeting: '',           // shown large in the empty grid; blank = no text shown
-    greetingEnabled: false, // master toggle — off by default
+    greeting: '',                // shown large in the empty grid; blank = pick a random default
+    greetingEnabled: true,       // master toggle — on by default; user-typed text takes precedence
+    greetingAnimation: 'float',  // none | float | drift | pulse | wobble | bounce | glow | glitch
+    greetingScale: 1,            // multiplier on the base font-size; slider 0.5 → 2.5
+    gridDotPx: 0,                // 0 = hidden (default for new installs); slider 0 → 10
+    gridDotDensity: 1,           // 1 / 2 / 4 / 8 — tiles per cell; higher = denser dot grid
   };
   const CUSTOM_THEMES_KEY = 'dashboard:customThemes:v1';
   const MAX_CUSTOM_THEMES = 3;
@@ -359,6 +366,49 @@
         'aria-checked': !!value,
         onClick: () => onChange(!value),
       }, e('span', { className: 'switch-knob' })),
+    );
+  }
+
+  // Continuous slider with a numeric readout. Use for any setting with a
+  // meaningful magnitude (sizes, opacity, etc).
+  function Slider({ label, value, min, max, step, onChange, hint, disabled, format }) {
+    return e('div', { className: 'set-row set-row-col' + (disabled ? ' is-disabled' : '') },
+      e('span', { className: 'set-label' },
+        label,
+        hint ? e('span', { className: 'set-hint' }, hint) : null,
+      ),
+      e('div', { className: 'slider-row' },
+        e('input', {
+          type: 'range',
+          min, max,
+          step: step != null ? step : 1,
+          value,
+          disabled: !!disabled,
+          className: 'slider',
+          onChange: (ev) => onChange(Number(ev.target.value)),
+        }),
+        e('span', { className: 'slider-val' }, format ? format(value) : String(value)),
+      ),
+    );
+  }
+
+  // Segmented option picker: a label on the left, a row of buttons on the
+  // right. options = [{ id, label }]; the active one is highlighted.
+  function Picker({ label, value, options, onChange, hint, disabled }) {
+    return e('div', { className: 'set-row set-row-col' + (disabled ? ' is-disabled' : '') },
+      e('span', { className: 'set-label' },
+        label,
+        hint ? e('span', { className: 'set-hint' }, hint) : null,
+      ),
+      e('div', { className: 'pick-row' },
+        options.map((opt) => e('button', {
+          key: opt.id,
+          type: 'button',
+          className: 'pick-opt' + (value === opt.id ? ' active' : ''),
+          onClick: () => !disabled && onChange(opt.id),
+          disabled: !!disabled,
+        }, opt.label)),
+      ),
     );
   }
 
@@ -1154,7 +1204,7 @@
         e(Toggle, {
           label: 'Show greeting on empty dashboard',
           value: p.greetingEnabled, onChange: p.onGreetingEnabled,
-          hint: 'large welcome text shown when no plugins are open',
+          hint: 'large welcome text shown when no plugins are open · disappears 30 s into a session',
         }),
         // Disable the input when the toggle is off so it's clear which
         // setting is the master switch. Persists across devices via the
@@ -1165,13 +1215,54 @@
             className: 'p-input',
             type: 'text',
             value: p.greeting || '',
-            placeholder: 'Welcome back',
+            placeholder: 'leave blank to cycle through defaults',
             maxLength: 80,
             disabled: !p.greetingEnabled,
             onChange: (ev) => p.onGreeting(ev.target.value),
             style: { flex: 1, minWidth: 0 },
           }),
         ),
+        e(Slider, {
+          label: 'Greeting size',
+          value: p.greetingScale, onChange: p.onGreetingScale,
+          min: 0.5, max: 2.5, step: 0.1,
+          disabled: !p.greetingEnabled,
+          format: (v) => v.toFixed(1) + '×',
+        }),
+        e(Picker, {
+          label: 'Greeting animation',
+          value: p.greetingAnimation, onChange: p.onGreetingAnimation,
+          disabled: !p.greetingEnabled,
+          hint: 'continuous motion while the greeting is shown',
+          options: [
+            { id: 'none',   label: 'None' },
+            { id: 'float',  label: 'Float' },
+            { id: 'drift',  label: 'Drift' },
+            { id: 'pulse',  label: 'Pulse' },
+            { id: 'wobble', label: 'Wobble' },
+            { id: 'bounce', label: 'Bounce' },
+            { id: 'glow',   label: 'Glow' },
+            { id: 'glitch', label: 'Glitch' },
+          ],
+        }),
+        e(Slider, {
+          label: 'Snap-grid dot size',
+          value: p.gridDotPx, onChange: p.onGridDotPx,
+          min: 0, max: 10, step: 0.5,
+          hint: 'set to 0 to hide',
+          format: (v) => v === 0 ? 'off' : v.toFixed(1) + ' px',
+        }),
+        e(Picker, {
+          label: 'Snap-grid density',
+          value: String(p.gridDotDensity), onChange: (v) => p.onGridDotDensity(Number(v)),
+          hint: 'fills the half-spaces between cells with extra dots',
+          options: [
+            { id: '1', label: '1×' },
+            { id: '2', label: '2×' },
+            { id: '4', label: '4×' },
+            { id: '8', label: '8×' },
+          ],
+        }),
       ),
     },
     {
@@ -1438,11 +1529,18 @@
         onMouseDown: isMaximized ? null : (ev) => onHeaderMouseDown(plugin.id, ev),
       }, headerChildren),
       e('div', { className: 'widget-body' }, body),
-      // Hide the resize handle while maximized — size is fixed to the grid area.
+      // Hide the resize handles while maximized — size is fixed to the grid area.
+      // Two corners: BR = grow toward bottom-right (default), BL = grow toward
+      // bottom-left (right edge stays anchored).
       !isMaximized && e('div', {
-        className: 'widget-resize',
+        className: 'widget-resize br',
         title: 'drag to resize',
-        onMouseDown: (ev) => onResizeStart(plugin.id, ev),
+        onMouseDown: (ev) => onResizeStart(plugin.id, ev, 'br'),
+      }),
+      !isMaximized && e('div', {
+        className: 'widget-resize bl',
+        title: 'drag to resize from left',
+        onMouseDown: (ev) => onResizeStart(plugin.id, ev, 'bl'),
       }),
     );
   }
@@ -1916,6 +2014,34 @@
     );
   }
 
+  // Pool of greetings cycled through on each launch when the user hasn't
+  // typed a custom one. Picked once per session at App mount so the same
+  // greeting persists until restart, and each restart shows a new one.
+  const DEFAULT_GREETINGS = [
+    "Let's Get Started!",
+    "Greetings, Human",
+    "Welcome Back",
+    "Hello, Operator",
+    "Online & Loaded",
+    "Standing By",
+    "Ready When You Are",
+    "All Systems Nominal",
+    "Boot Sequence Complete",
+    "Initializing Awesome",
+    "Engage",
+    "Good to See You",
+    "Up and Running",
+    "Mission Control Online",
+    "Greetings, Earthling",
+    "Reporting for Duty",
+    "Console Ready",
+    "Welcome, Commander",
+    "All Aboard",
+    "Let's Build Something",
+  ];
+  const pickGreeting = () =>
+    DEFAULT_GREETINGS[Math.floor(Math.random() * DEFAULT_GREETINGS.length)];
+
   // ---------- App ----------
   function App() {
     const [plugins, setPlugins] = useState([]);
@@ -1941,6 +2067,11 @@
     const [version, setVersion] = useState('');
     const [packaged, setPackaged] = useState(false);
     const [updateStatus, setUpdateStatus] = useState({ state: 'idle' });
+    // Picked once per session — survives re-renders, changes on next launch.
+    const [sessionGreeting] = useState(pickGreeting);
+    // Greeting is shown only during the first 30s of a session; once this
+    // flips to true the empty grid is just blank space until next launch.
+    const [greetingExpired, setGreetingExpired] = useState(false);
     const [disabledIds, setDisabledIds] = useState(loadDisabled);
     const [minimizedIds, setMinimizedIds] = useState(loadMinimized);
     const [startOpen, setStartOpen] = useState(false);
@@ -2153,10 +2284,15 @@
         offUpdates = window.dashboard.updates.onStatus(setUpdateStatus);
       }
 
+      // Greeting expires 30s after launch — fades out on the empty grid and
+      // never reappears until the app is relaunched.
+      const greetingTimer = setTimeout(() => setGreetingExpired(true), 30_000);
+
       reload();
       const offPlugins = window.dashboard.onPluginsChanged(() => setReloadKey((k) => k + 1));
       const offFs = window.dashboard.onFullScreenChange(setFullScreen);
       return () => {
+        clearTimeout(greetingTimer);
         offPlugins && offPlugins();
         offFs && offFs();
         offUpdates && offUpdates();
@@ -2175,6 +2311,20 @@
       if (!pluginId) return;
       setPluginVersions((prev) => ({ ...prev, [pluginId]: (prev[pluginId] || 0) + 1 }));
     }, []);
+
+    // Our own device id, fetched once on mount. Used below to ignore
+    // vault:changed echoes of writes that originated from this very device —
+    // without this, a write on the laptop bounces through the host's SSE,
+    // arrives back here, and remounts the plugin that just performed the
+    // write. The remount loses focus / clobbers in-progress edits, and the
+    // pending debounced save then triggers another bounce → cascade.
+    const myDeviceIdRef = useRef(null);
+    useEffect(() => {
+      if (window.dashboard && window.dashboard.sync && window.dashboard.sync.deviceId) {
+        window.dashboard.sync.deviceId().then((id) => { myDeviceIdRef.current = id || null; }).catch(() => {});
+      }
+    }, []);
+
     // Map of vault name → list of plugin ids that read from it. Vault-changed
     // events bump those plugins' versions so they re-fetch from the host.
     // Cognicore is intentionally NOT here — it subscribes to vault.onChanged
@@ -2214,6 +2364,10 @@
       const offVault = window.dashboard.vault.onChanged((info) => {
         const vaultName = info && info.name;
         if (!vaultName) return;
+        // Skip echoes of our own writes — the originating plugin already
+        // updated its state in-place and a remount here would just clobber
+        // anything the user typed in the meantime.
+        if (info.device && myDeviceIdRef.current && info.device === myDeviceIdRef.current) return;
         const readers = VAULT_READERS[vaultName] || [];
         for (const id of readers) bumpPluginVersion(id);
       });
@@ -2291,6 +2445,47 @@
       if (!settings.font || settings.font === 'auto') delete document.body.dataset.font;
       else document.body.dataset.font = settings.font;
     }, [settings.font]);
+
+    // Snap-grid dot size + density — drive CSS variables consumed by
+    // .grid's radial-gradient background layers. dotPx=0 hides them.
+    useEffect(() => {
+      const px = Math.max(0, Number(settings.gridDotPx ?? 0));
+      document.body.style.setProperty('--snap-dot-size', px + 'px');
+      // Slight opacity bump for larger dots so they don't get washed out.
+      // Range maps roughly: 1px → 0.25, 5px → 0.40, 10px → 0.55.
+      const opacity = px === 0 ? 0 : Math.min(0.6, 0.22 + px * 0.034);
+      document.body.style.setProperty('--snap-dot-opacity', String(opacity));
+    }, [settings.gridDotPx]);
+
+    useEffect(() => {
+      // Density divides the tile size, so 2× yields half-step dots, 4× quarter,
+      // etc. Constrain to allowed values defensively.
+      const allowed = [1, 2, 4, 8];
+      const d = allowed.includes(Number(settings.gridDotDensity)) ? Number(settings.gridDotDensity) : 1;
+      document.body.style.setProperty('--snap-density', String(d));
+    }, [settings.gridDotDensity]);
+
+    // Square cells: row height tracks live cellWidth so 1×1 is always a
+    // perfect square at any window width. Sets two CSS vars on <body>:
+    //   --cell-w: column width in px (mirrors what CSS grid 1fr produces)
+    //   --cell-h: row height in px (= cellW, makes cells square)
+    // Resize/drag math reads these via getComputedStyle so it stays in sync.
+    useEffect(() => {
+      const el = gridRef.current;
+      if (!el) return;
+      const PAD_X = 22;
+      const update = () => {
+        const w = el.getBoundingClientRect().width;
+        if (!w) return;
+        const cellW = (w - 2 * PAD_X - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
+        document.body.style.setProperty('--cell-w', cellW + 'px');
+        document.body.style.setProperty('--cell-h', cellW + 'px');
+      };
+      update();
+      const ro = new ResizeObserver(update);
+      ro.observe(el);
+      return () => ro.disconnect();
+    }, []);
 
     useEffect(() => {
       const triple = hexToRgbTriple(settings.accent);
@@ -2402,8 +2597,11 @@
       setDragId(id);
 
       const gridRect = gridEl.getBoundingClientRect();
-      const cellWidth  = (gridRect.width  - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
-      const cellHeight = CELL_HEIGHT;
+      const PAD_X = 22;
+      // cellW from the grid's painted area (subtract horizontal padding +
+      // gaps). cells are square so cellH == cellW.
+      const cellWidth  = (gridRect.width - 2 * PAD_X - (GRID_COLS - 1) * GRID_GAP) / GRID_COLS;
+      const cellHeight = cellWidth;
       // Pointer offset within the widget itself, so dragging feels natural
       const widgetEl = ev.currentTarget.closest('.widget');
       const widgetRect = widgetEl ? widgetEl.getBoundingClientRect() : { left: ev.clientX, top: ev.clientY };
@@ -2541,9 +2739,10 @@
     }, [updateLayout]);
 
     // ---------- Resize ----------
-    const onResizeStart = useCallback((id, ev) => {
+    const onResizeStart = useCallback((id, ev, side) => {
       ev.preventDefault();
       ev.stopPropagation();
+      const fromLeft = side === 'bl';
 
       const widgetEl = ev.currentTarget.closest('.widget');
       const item = visible.find((v) => v.plugin.id === id);
@@ -2552,27 +2751,39 @@
       const rect = widgetEl.getBoundingClientRect();
       const startW = item.width;
       const startH = item.height;
-      // Solve for cellWidth from current pixel width (accounts for inter-cell gaps)
+      const startCol = item.col;
+      // Right-edge column line (in grid coords). Resize from BL keeps this fixed.
+      const rightEdge = startCol + startW;
+      // Solve for cellWidth from current pixel width (accounts for inter-cell gaps).
+      // Cells are square so cellH == cellW.
       const cellWidth = (rect.width - (startW - 1) * GRID_GAP) / startW;
-      const cellHeight = CELL_HEIGHT;
+      const cellHeight = cellWidth;
       const startX = ev.clientX;
       const startY = ev.clientY;
 
-      document.body.style.cursor = 'nwse-resize';
+      document.body.style.cursor = fromLeft ? 'nesw-resize' : 'nwse-resize';
       document.body.style.userSelect = 'none';
 
-      // With explicit grid placement, the widget can't grow past the right edge
-      const widthCeiling = Math.min(MAX_W, GRID_COLS - item.col);
+      // BR: can't grow past the right edge of the grid.
+      // BL: can't grow past column 0 — width is bounded by the original right edge.
+      const widthCeiling = fromLeft
+        ? Math.min(MAX_W, rightEdge)
+        : Math.min(MAX_W, GRID_COLS - startCol);
+
       const onMove = (e) => {
         const dx = e.clientX - startX;
         const dy = e.clientY - startY;
-        const newPxW = startW * cellWidth + (startW - 1) * GRID_GAP + dx;
+        // For BL the cursor moving LEFT increases width (and shifts col left).
+        const dxEffective = fromLeft ? -dx : dx;
+        const newPxW = startW * cellWidth + (startW - 1) * GRID_GAP + dxEffective;
         const newPxH = startH * cellHeight + (startH - 1) * GRID_GAP + dy;
         const newW = Math.max(MIN_W, Math.min(widthCeiling,
           Math.round((newPxW + GRID_GAP) / (cellWidth + GRID_GAP))));
         const newH = Math.max(MIN_H, Math.min(MAX_H,
           Math.round((newPxH + GRID_GAP) / (cellHeight + GRID_GAP))));
-        resizeRef.current = { id, w: newW, h: newH };
+        // Keep the right edge anchored when resizing from BL by sliding col.
+        const newCol = fromLeft ? Math.max(0, rightEdge - newW) : startCol;
+        resizeRef.current = { id, w: newW, h: newH, col: newCol };
         forceTick((t) => t + 1);
       };
 
@@ -2584,10 +2795,18 @@
         const r = resizeRef.current;
         resizeRef.current = null;
         if (r) {
-          updateLayout((prev) => ({
-            ...prev,
-            [r.id]: { ...(prev[r.id] || { order: 0 }), width: r.w, height: r.h },
-          }));
+          updateLayout((prev) => {
+            const cur = prev[r.id] || { order: 0 };
+            return {
+              ...prev,
+              [r.id]: {
+                ...cur,
+                width: r.w,
+                height: r.h,
+                ...(typeof r.col === 'number' ? { col: r.col } : {}),
+              },
+            };
+          });
         }
         forceTick((t) => t + 1);
       };
@@ -2655,6 +2874,14 @@
         onGreeting: (v) => persistSettings({ ...settings, greeting: v }),
         greetingEnabled: !!settings.greetingEnabled,
         onGreetingEnabled: (v) => persistSettings({ ...settings, greetingEnabled: v }),
+        greetingScale: typeof settings.greetingScale === 'number' ? settings.greetingScale : 1,
+        onGreetingScale: (v) => persistSettings({ ...settings, greetingScale: v }),
+        greetingAnimation: settings.greetingAnimation || 'float',
+        onGreetingAnimation: (v) => persistSettings({ ...settings, greetingAnimation: v }),
+        gridDotPx: typeof settings.gridDotPx === 'number' ? settings.gridDotPx : 0,
+        onGridDotPx: (v) => persistSettings({ ...settings, gridDotPx: v }),
+        gridDotDensity: typeof settings.gridDotDensity === 'number' ? settings.gridDotDensity : 1,
+        onGridDotDensity: (v) => persistSettings({ ...settings, gridDotDensity: v }),
         theme: settings.theme || 'retro',
         onTheme: (v) => persistSettings({ ...settings, theme: v }),
         font: settings.font || 'auto',
@@ -2689,9 +2916,25 @@
         ref: gridRef,
       },
         visible.length === 0
-          ? (settings.greetingEnabled && (settings.greeting || '').trim()
-              ? e('div', { className: 'greeting' },
-                  e('span', { className: 'greeting-text' }, settings.greeting))
+          ? (settings.greetingEnabled && !greetingExpired
+              ? (() => {
+                  const text = (settings.greeting || '').trim() || sessionGreeting;
+                  const scale = typeof settings.greetingScale === 'number' ? settings.greetingScale : 1;
+                  const anim = settings.greetingAnimation || 'float';
+                  // Re-key on animation + text so changing either re-runs the
+                  // intro fade (otherwise we'd just see the loop with no fade-in).
+                  return e('div', {
+                    className: 'greeting',
+                    style: { '--greeting-scale': scale },
+                    key: 'greeting-' + anim + '-' + text,
+                  },
+                    e('span', {
+                      className: 'greeting-text greeting-anim-' + anim,
+                      // data-text is consumed by the glitch animation's pseudo-elements.
+                      'data-text': text,
+                    }, text),
+                  );
+                })()
               : null)
           : [
               ...visible.map((v) => {
@@ -2702,7 +2945,8 @@
                 return e(Widget, {
                   key: v.plugin.id + ':' + reloadKey + ':' + (pluginVersions[v.plugin.id] || 0),
                   plugin: v.plugin,
-                  col: v.col,
+                  // BL resize shifts the column live so the right edge stays anchored.
+                  col: (transient && typeof transient.col === 'number') ? transient.col : v.col,
                   row: v.row,
                   w: transient ? transient.w : v.width,
                   h: transient ? transient.h : v.height,

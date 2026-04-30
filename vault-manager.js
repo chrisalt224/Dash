@@ -129,22 +129,28 @@ class VaultManager {
     return await fsp.readFile(full, 'utf8');
   }
 
-  async write(name, rel, content) {
+  // The optional `originator` on each mutating method is the device id of the
+  // device that initiated the write — local writes leave it null (callers
+  // stamp it with the host's id), but writes that arrive over HTTP from a
+  // sync client carry the client's device id so the resulting vault-changed
+  // event can be tagged correctly. Receivers use this to ignore echoes of
+  // their own writes (which would otherwise remount the originating plugin).
+  async write(name, rel, content, originator) {
     const full = this._resolve(name, rel);
     await fsp.mkdir(path.dirname(full), { recursive: true });
     await fsp.writeFile(full, content == null ? '' : String(content), 'utf8');
-    this._fire(name, 'write', rel);
+    this._fire(name, 'write', rel, originator);
     return true;
   }
 
-  async mkdir(name, rel) {
+  async mkdir(name, rel, originator) {
     const full = this._resolve(name, rel);
     await fsp.mkdir(full, { recursive: true });
-    this._fire(name, 'mkdir', rel);
+    this._fire(name, 'mkdir', rel, originator);
     return true;
   }
 
-  async rename(name, from, to) {
+  async rename(name, from, to, originator) {
     const a = this._resolve(name, from);
     const b = this._resolve(name, to);
     if (a === b) return true;
@@ -162,11 +168,11 @@ class VaultManager {
     }
     await fsp.rename(a, b);
     await this._cleanupEmptyDirsUpTo(name, path.dirname(a));
-    this._fire(name, 'rename', { from, to });
+    this._fire(name, 'rename', { from, to }, originator);
     return true;
   }
 
-  async delete(name, rel) {
+  async delete(name, rel, originator) {
     const full = this._resolve(name, rel);
     let st;
     try { st = await fsp.stat(full); }
@@ -177,7 +183,7 @@ class VaultManager {
     if (st.isDirectory()) await fsp.rm(full, { recursive: true, force: true });
     else await fsp.unlink(full);
     await this._cleanupEmptyDirsUpTo(name, path.dirname(full));
-    this._fire(name, 'delete', rel);
+    this._fire(name, 'delete', rel, originator);
     return true;
   }
 
@@ -204,9 +210,9 @@ class VaultManager {
       if (i >= 0) this.listeners.splice(i, 1);
     };
   }
-  _fire(name, op, payload) {
+  _fire(name, op, payload, originator) {
     for (const cb of this.listeners) {
-      try { cb({ name, op, payload }); } catch {}
+      try { cb({ name, op, payload, originator }); } catch {}
     }
   }
 }

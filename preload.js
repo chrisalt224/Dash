@@ -225,12 +225,32 @@ contextBridge.exposeInMainWorld('dashboard', {
     clearAll:    () => ipcRenderer.invoke('servers:clearAll'),
   },
 
+  // Remote desktop signaling + input injection (remote-host / remote-viewer).
+  // Signaling rides the existing sync SSE channel — main fans out events to
+  // every connected device, the renderer filters by the `to` field.
+  remote: {
+    deviceId:   () => ipcRenderer.invoke('remote-control:deviceId'),
+    deviceName: () => ipcRenderer.invoke('remote-control:deviceName'),
+    send:       (event) => ipcRenderer.invoke('remote-control:send', event),
+    listScreens:    () => ipcRenderer.invoke('remote-control:listScreens'),
+    startInjector:  () => ipcRenderer.invoke('remote-control:startInjector'),
+    stopInjector:   () => ipcRenderer.invoke('remote-control:stopInjector'),
+    injectorStatus: () => ipcRenderer.invoke('remote-control:injectorStatus'),
+    injectInput:    (cmd) => ipcRenderer.invoke('remote-control:injectInput', cmd),
+    onEvent: (cb) => {
+      const handler = (_e, ev) => cb(ev);
+      ipcRenderer.on('remote-control:event', handler);
+      return () => ipcRenderer.removeListener('remote-control:event', handler);
+    },
+  },
+
   // Multi-device sync (driven by the Servers plugin). Connection is owned
   // by main so it survives plugin remount / minimize.
   sync: {
     connect:    (entry, password) => ipcRenderer.invoke('sync:connect', entry, password),
     disconnect: () => ipcRenderer.invoke('sync:disconnect'),
     status:     () => ipcRenderer.invoke('sync:status'),
+    deviceId:   () => ipcRenderer.invoke('sync:deviceId'),
     onStatus: (cb) => {
       const handler = (_e, st) => cb(st);
       ipcRenderer.on('sync:status-changed', handler);

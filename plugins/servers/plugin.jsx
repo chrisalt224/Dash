@@ -46,6 +46,22 @@ export default {
     const [editing, setEditing] = useState(null);  // { id?, name, url, password, savePassword }
     const [conn, setConn] = useState(null);        // { server, status, error }
     const [events, setEvents] = useState([]);
+    // Server mode: when this device is itself running the host server, the
+    // connect-to-others UI is hidden — a hub connecting to another hub causes
+    // routing loops + duplicate sync events. Polled every 2s.
+    const [hostStatus, setHostStatus] = useState(null); // { running, port, lan, ... } | null
+    useEffect(() => {
+      let cancelled = false;
+      const poll = async () => {
+        try {
+          const st = await window.dashboard.host.status();
+          if (!cancelled) setHostStatus(st || null);
+        } catch { if (!cancelled) setHostStatus(null); }
+      };
+      poll();
+      const id = setInterval(poll, 2000);
+      return () => { cancelled = true; clearInterval(id); };
+    }, []);
 
     // ---- list ops ----
     const refresh = useCallback(async () => {
@@ -182,6 +198,68 @@ export default {
       reconnecting: 'var(--accent-warm, var(--accent))',
       error:        'var(--danger)',
     };
+
+    // ---- Server Mode override ----
+    // When this machine is itself running the host server, connecting outward
+    // would create a hub-to-hub loop. Auto-drop any active outbound connection
+    // and replace the whole UI with a server-status panel.
+    const isHosting = !!(hostStatus && hostStatus.running);
+    useEffect(() => {
+      if (isHosting && conn) {
+        window.dashboard.sync.disconnect().catch(() => {});
+      }
+    }, [isHosting, conn]);
+
+    const [serverIps, setServerIps] = useState([]);
+    useEffect(() => {
+      if (!isHosting) { setServerIps([]); return; }
+      let cancelled = false;
+      window.dashboard.host.localIps().then((ips) => {
+        if (!cancelled) setServerIps(Array.isArray(ips) ? ips : []);
+      }).catch(() => {});
+      return () => { cancelled = true; };
+    }, [isHosting]);
+
+    if (isHosting) {
+      const port = hostStatus.port || 7878;
+      const reachable = (hostStatus.lan ? serverIps : ['127.0.0.1']).map((ip) => `http://${ip}:${port}`);
+      return (
+        <div className="p-col" style={{ height: '100%', gap: 8, padding: 4 }}>
+          <div className="p-row" style={{ alignItems: 'baseline', gap: 6 }}>
+            <span style={{ color: 'var(--accent)' }}>●</span>
+            <strong style={{ flex: 1 }}>Server Mode</strong>
+            <span className="p-label" style={{ fontSize: 9 }}>port {port}</span>
+          </div>
+          <div style={{
+            padding: 10,
+            border: '1px solid var(--border-bright)',
+            borderRadius: 4,
+            background: 'rgba(var(--accent-rgb), 0.04)',
+          }}>
+            <div style={{ fontSize: 12, marginBottom: 6 }}>
+              this device is hosting — outbound connections are disabled to
+              prevent hub-to-hub loops.
+            </div>
+            <div className="p-label" style={{ fontSize: 9, marginBottom: 4 }}>
+              {hostStatus.lan ? 'reachable on LAN at' : 'loopback only — enable LAN in settings'}
+            </div>
+            <div className="p-mono" style={{ fontSize: 11, color: 'var(--fg-bright)' }}>
+              {reachable.length === 0
+                ? <span className="p-dim">discovering interfaces…</span>
+                : reachable.map((u) => <div key={u}>{u}</div>)}
+            </div>
+            <div className="p-row" style={{ marginTop: 8, gap: 6, fontSize: 10 }}>
+              <span className="p-dim">sessions:</span> <span>{hostStatus.sessions || 0}</span>
+              <span className="p-dim" style={{ marginLeft: 8 }}>live clients:</span> <span>{hostStatus.sseClients || 0}</span>
+            </div>
+          </div>
+          <div className="p-dim" style={{ fontSize: 10, padding: '4px 2px' }}>
+            stop the server in <span className="p-accent">Settings → Host</span> to use the
+            Servers plugin in client mode.
+          </div>
+        </div>
+      );
+    }
 
     // ---- VIEWS ----
     if (view.name === 'edit' && editing) {

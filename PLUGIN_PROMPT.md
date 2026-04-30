@@ -14,15 +14,17 @@ Output **ONE complete `.jsx` file** — no surrounding explanation, no markdown 
 export default {
   id: 'unique-id',                    // optional; defaults to folder name
   name: 'Display Name',               // shown in widget header
-  width: 2,                           // initial grid units 1–4 (default 1)
-  height: 2,                          // initial grid units 1–8 (default 1)
+  width: 2,                           // initial grid units 1–6 (default 1)
+  height: 2,                          // initial grid units 1–12 (default 1)
   component: ({ React, useState, useEffect, useMemo, useRef, useCallback }) => {
     return <div>...</div>;
   },
 };
 ```
 
-The user can resize past your defaults — your component **must work at any size from 1×1 to 4×8**.
+The grid is **6 columns wide with square cells** — row height tracks column width at runtime, so 1×1 is always a perfect square at any window size. Pick widths and heights so the natural aspect ratio of your content matches a multiple of square cells (e.g. a tall list = 1×4, a chart = 3×3, a settings panel = 2×3).
+
+The user can resize past your defaults — your component **must work at any size from 1×1 to 6×12**.
 
 ## Hard rules (do NOT break these)
 
@@ -324,7 +326,7 @@ export default {
 - [ ] Hooks destructured from `component` props
 - [ ] Font family from `var(--mono)` (don't assume monospace — themes can swap to sans/serif)
 - [ ] All colors from CSS variables — including translucent fills via `rgba(var(--accent-rgb), X)`. Hardcoded hex only allowed in opt-out terminal-immersive plugins, with a comment explaining why
-- [ ] Works at sizes 1×1 through 4×8
+- [ ] Works at sizes 1×1 through 6×12 (cells are square)
 - [ ] All state in localStorage with `plugin:<id>:` prefix OR uses host disk APIs
 - [ ] No `alert()`, `confirm()`, `prompt()`
 - [ ] Async work uses cleanup (`cancelled` flag, `clearInterval`, `cancelAnimationFrame`)

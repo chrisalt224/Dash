@@ -67,6 +67,28 @@ export default {
     const graphDataRef = useRef({});
     const openNoteRef  = useRef(() => {});
 
+    // Refs the vault.onChanged listener reads — that listener is registered
+    // ONCE in a useEffect with [] deps, so the closures it captures never see
+    // re-rendered values. Without these refs, scanVault would always read the
+    // first-render currentPath/dirty/editorContent and clobber active edits
+    // any time another device's change echoed back.
+    const currentPathRef    = useRef(currentPath);
+    const dirtyRef          = useRef(dirty);
+    const editorContentRef  = useRef(editorContent);
+    const initialMountRef   = useRef(true); // restore LAST_KEY only on first scan
+    useEffect(() => { currentPathRef.current   = currentPath;   }, [currentPath]);
+    useEffect(() => { dirtyRef.current         = dirty;         }, [dirty]);
+    useEffect(() => { editorContentRef.current = editorContent; }, [editorContent]);
+
+    // Our own device id — used to ignore vault:changed echoes of our own
+    // writes (the SSE round-trip from host → us was clobbering edits).
+    const myDeviceIdRef = useRef(null);
+    useEffect(() => {
+      if (window.dashboard.sync && window.dashboard.sync.deviceId) {
+        window.dashboard.sync.deviceId().then((id) => { myDeviceIdRef.current = id || null; }).catch(() => {});
+      }
+    }, []);
+
     // ── Helpers: error banner ──────────────────────────────────────────────
     const showError = (msg) => {
       setErrorMsg(msg);
@@ -109,10 +131,15 @@ export default {
       return () => { cancelled = true; };
     }, []);
 
-    // Refresh on remote vault changes (another device wrote to cognicore)
+    // Refresh on remote vault changes (another device wrote to cognicore).
+    // Skip echoes of our own writes — createNote/etc. already updated state
+    // locally; running scanVault again on the echo would race with the user's
+    // typing and clobber the editor.
     useEffect(() => {
       const off = window.dashboard.vault.onChanged((info) => {
-        if (info && info.name === VAULT_NAME) scanVault();
+        if (!info || info.name !== VAULT_NAME) return;
+        if (info.device && myDeviceIdRef.current && info.device === myDeviceIdRef.current) return;
+        scanVault();
       });
       return () => off && off();
     }, []);
@@ -123,6 +150,11 @@ export default {
     useEffect(() => { localStorage.setItem(SIDEBAR_KEY,  rightTab);                 }, [rightTab]);
 
     // ── Vault scan: pull all .md notes (with bodies) from the central vault ──
+    // On the FIRST scan after mount we restore the last-opened note from
+    // LAST_KEY. On subsequent scans (triggered by remote vault-changed events
+    // from other devices) we never auto-switch — that would yank the user out
+    // of whatever they're currently editing. We also refuse to overwrite the
+    // editor body when the user has unsaved local edits (`dirty === true`).
     const scanVault = async () => {
       try {
         const items = await window.dashboard.vault.listNotes(VAULT_NAME);
@@ -142,13 +174,33 @@ export default {
         }
         setNotes(found);
 
-        const last = localStorage.getItem(LAST_KEY);
-        if (last && found.some(n => n.relPath === last)) {
-          if (currentPath !== last) {
-            setCurrentPath(last);
+        const curPath = currentPathRef.current;
+        const isFirst = initialMountRef.current;
+        initialMountRef.current = false;
+
+        if (isFirst) {
+          // Cold start — restore last-opened note if it still exists.
+          const last = localStorage.getItem(LAST_KEY);
+          if (last && found.some(n => n.relPath === last)) {
             const f = found.find(n => n.relPath === last);
+            setCurrentPath(last);
             setEditorContent(f.content || '');
             setDirty(false);
+          }
+          return;
+        }
+
+        // Subsequent scan (remote change): if the active note was deleted
+        // remotely, drop it. Otherwise refresh its body ONLY when the user
+        // has no unsaved edits — never clobber typing in progress.
+        if (curPath) {
+          const stillExists = found.find(n => n.relPath === curPath);
+          if (!stillExists) {
+            setCurrentPath(null);
+            setEditorContent('');
+            setDirty(false);
+          } else if (!dirtyRef.current && stillExists.content !== editorContentRef.current) {
+            setEditorContent(stillExists.content || '');
           }
         }
       } catch (e) {

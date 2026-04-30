@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, shell, dialog, globalShortcut, screen, clipboard, session, safeStorage } = require('electron');
+const { app, BrowserWindow, ipcMain, shell, dialog, globalShortcut, screen, clipboard, session, safeStorage, desktopCapturer } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
@@ -636,12 +636,33 @@ syncManager.setHubBroadcast((event) => {
   if (activityServer.isRunning()) activityServer.broadcastSync(event);
 });
 
+// ---- Remote-control signaling (used by remote-host / remote-viewer) ----
+// Carries WebRTC offer/answer/ICE + custom requests between any two devices
+// connected to the same hub. The transport piggy-backs on the existing SSE
+// fan-out — every device receives every event, then the renderer filters by
+// the `to` field. We don't apply these to local state; we just route them.
+function handleRemoteControlEvent(event) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    try { mainWindow.webContents.send('remote-control:event', event); } catch {}
+  }
+}
+
 // Hub-side handlers for the activity server: receiving an incoming push,
 // answering a snapshot request, vault routing.
 // Note: `vault` is attached to activityServer.sync separately, after
 // vaultManager is constructed (further down in this file).
 activityServer.setSync({
-  handler: async (event) => syncManager.applyIncoming(event),
+  handler: async (event) => {
+    // Remote-control signaling: forward to our renderer + fan out to other clients.
+    if (event && event.kind === 'remote-control') {
+      handleRemoteControlEvent(event);
+      if (activityServer.isRunning()) {
+        try { activityServer.broadcastSync(event); } catch {}
+      }
+      return;
+    }
+    return syncManager.applyIncoming(event);
+  },
   snapshot: async () => syncManager.buildSnapshot(),
   readNoteBody: async (relPath) => {
     try { return await vaultManager.read('notes', relPath); }
@@ -836,7 +857,10 @@ function syncClientOpenSse() {
             // vault-changed events are routing-only — forward to renderer so
             // any plugin showing vault content can refresh.
             if (ev.kind === 'vault-changed' && mainWindow && !mainWindow.isDestroyed()) {
-              try { mainWindow.webContents.send('vault:changed', { name: ev.name, op: ev.op, payload: ev.payload }); } catch {}
+              try { mainWindow.webContents.send('vault:changed', { name: ev.name, op: ev.op, payload: ev.payload, device: ev.device }); } catch {}
+            } else if (ev.kind === 'remote-control') {
+              // Remote-control signaling: forward to renderer; do not touch state.
+              handleRemoteControlEvent(ev);
             } else {
               syncManager.applyIncoming(ev).catch(() => {});
             }
@@ -981,6 +1005,235 @@ ipcMain.handle('sync:status', () => {
   } : { connected: false, status: 'idle', error: null, server: null };
 });
 
+// Stable per-installation device id. Used by renderer code (and plugins) to
+// distinguish their own writes from cross-device events when filtering
+// vault:changed / sync events to avoid echo-driven loops.
+ipcMain.handle('sync:deviceId', () => syncManager.deviceId);
+
+// ---------- Remote desktop (remote-host / remote-viewer plugins) ----------
+// Three pieces:
+//   1. signaling: dispatch a remote-control event to all other devices on the
+//      shared hub (broadcast if we're the hub; push if we're a client; both).
+//   2. screen capture: handled in renderer via getDisplayMedia. We auto-grant
+//      requests below so the user isn't prompted on every accept.
+//   3. input injection: a long-lived PowerShell child process driving Win32
+//      user32.dll via P/Invoke. We pipe one JSON command per stdin line.
+//      mac/Linux currently throw a clear error from the renderer.
+
+function dispatchRemoteControl(event) {
+  if (!event || typeof event !== 'object') return;
+  const stamped = {
+    __dashboard_sync: true,
+    kind: 'remote-control',
+    ts: Date.now(),
+    ...event,
+    from: syncManager.deviceId,
+  };
+  // If we're the hub, fan out to clients via SSE.
+  if (activityServer.isRunning()) {
+    try { activityServer.broadcastSync(stamped); } catch {}
+  }
+  // If we're connected as a client to a remote hub, push there too.
+  // (Hub will then re-broadcast to its other clients via the setSync handler.)
+  if (syncClient.active && syncClient.active.status === 'connected') {
+    syncClientPushEvent(stamped).catch(() => {});
+  }
+  return stamped;
+}
+
+ipcMain.handle('remote-control:send', (_e, event) => dispatchRemoteControl(event));
+ipcMain.handle('remote-control:deviceId', () => syncManager.deviceId);
+ipcMain.handle('remote-control:deviceName', () => os.hostname());
+
+// Auto-grant getDisplayMedia for the primary screen so the host plugin can
+// start streaming without a system picker every time. This is the same
+// implicit-trust posture used for microphone access elsewhere in this app.
+let displayMediaHandlerInstalled = false;
+function ensureDisplayMediaHandler() {
+  if (displayMediaHandlerInstalled) return;
+  try {
+    session.defaultSession.setDisplayMediaRequestHandler(async (_request, callback) => {
+      try {
+        const sources = await desktopCapturer.getSources({
+          types: ['screen'],
+          thumbnailSize: { width: 0, height: 0 },
+        });
+        if (sources && sources.length) callback({ video: sources[0] });
+        else callback({});
+      } catch { callback({}); }
+    });
+    displayMediaHandlerInstalled = true;
+  } catch (err) {
+    console.error('[remote] setDisplayMediaRequestHandler failed:', err.message);
+  }
+}
+
+ipcMain.handle('remote-control:listScreens', async () => {
+  try {
+    const sources = await desktopCapturer.getSources({
+      types: ['screen'],
+      thumbnailSize: { width: 160, height: 100 },
+    });
+    return sources.map((s) => ({
+      id: s.id,
+      name: s.name,
+      thumbnail: s.thumbnail ? s.thumbnail.toDataURL() : null,
+    }));
+  } catch (err) {
+    return { error: err.message };
+  }
+});
+
+// ---- PowerShell-based input injector (Windows only) ----
+// Embedded as a string so it bundles cleanly through asar — written to
+// userData on first use and spawned with -File. Script reads JSON commands
+// from stdin (one per line) and dispatches them to user32 via Add-Type.
+const REMOTE_INJECTOR_PS1 = `Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class U32 {
+  [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+  [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, IntPtr extra);
+  [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+  [DllImport("user32.dll")] public static extern int GetSystemMetrics(int n);
+}
+"@
+$w = [U32]::GetSystemMetrics(0)
+$h = [U32]::GetSystemMetrics(1)
+[Console]::Out.WriteLine("ready " + $w + "x" + $h)
+[Console]::Out.Flush()
+while ($true) {
+  $line = [Console]::In.ReadLine()
+  if ($null -eq $line) { break }
+  if ($line.Length -eq 0) { continue }
+  try {
+    $c = $line | ConvertFrom-Json
+    switch ($c.t) {
+      'm' {
+        $px = [int]([double]$c.x * $w)
+        $py = [int]([double]$c.y * $h)
+        if ($px -lt 0) { $px = 0 } elseif ($px -ge $w) { $px = $w - 1 }
+        if ($py -lt 0) { $py = 0 } elseif ($py -ge $h) { $py = $h - 1 }
+        [void][U32]::SetCursorPos($px, $py)
+      }
+      'd' {
+        switch ([int]$c.b) {
+          0 { [U32]::mouse_event(0x0002, 0, 0, 0, [IntPtr]::Zero) }
+          1 { [U32]::mouse_event(0x0008, 0, 0, 0, [IntPtr]::Zero) }
+          2 { [U32]::mouse_event(0x0020, 0, 0, 0, [IntPtr]::Zero) }
+        }
+      }
+      'u' {
+        switch ([int]$c.b) {
+          0 { [U32]::mouse_event(0x0004, 0, 0, 0, [IntPtr]::Zero) }
+          1 { [U32]::mouse_event(0x0010, 0, 0, 0, [IntPtr]::Zero) }
+          2 { [U32]::mouse_event(0x0040, 0, 0, 0, [IntPtr]::Zero) }
+        }
+      }
+      'w' {
+        [U32]::mouse_event(0x0800, 0, 0, [int]$c.dy, [IntPtr]::Zero)
+      }
+      'k' {
+        $flags = 0
+        if ($c.up) { $flags = 2 }
+        [U32]::keybd_event([byte][int]$c.vk, 0, [uint32]$flags, [IntPtr]::Zero)
+      }
+    }
+  } catch {}
+}
+`;
+
+const remoteInjector = {
+  proc: null,
+  ready: false,
+  screen: null, // "WxH" reported by the script
+};
+
+function ensureInjectorScript() {
+  const dir = path.join(app.getPath('userData'), 'remote-control');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = path.join(dir, 'injector.ps1');
+  // Always rewrite so updates to the embedded source land on next launch.
+  fs.writeFileSync(file, REMOTE_INJECTOR_PS1, 'utf8');
+  return file;
+}
+
+function startRemoteInjector() {
+  if (process.platform !== 'win32') {
+    throw new Error('input injection currently supported on Windows only');
+  }
+  if (remoteInjector.proc) return { ok: true, screen: remoteInjector.screen };
+  const scriptPath = ensureInjectorScript();
+  const proc = spawn('powershell.exe', [
+    '-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass',
+    '-File', scriptPath,
+  ], { windowsHide: true });
+  remoteInjector.proc = proc;
+  remoteInjector.ready = false;
+  let stdoutBuf = '';
+  proc.stdout.on('data', (chunk) => {
+    stdoutBuf += chunk.toString('utf8');
+    let nl;
+    while ((nl = stdoutBuf.indexOf('\n')) !== -1) {
+      const line = stdoutBuf.slice(0, nl).trim();
+      stdoutBuf = stdoutBuf.slice(nl + 1);
+      if (line.startsWith('ready ')) {
+        remoteInjector.ready = true;
+        remoteInjector.screen = line.slice(6);
+        console.log('[remote] injector ready', remoteInjector.screen);
+      }
+    }
+  });
+  proc.stderr.on('data', (c) => console.error('[remote] injector stderr:', c.toString()));
+  proc.on('exit', (code) => {
+    console.log('[remote] injector exited', code);
+    remoteInjector.proc = null;
+    remoteInjector.ready = false;
+  });
+  return { ok: true };
+}
+
+function stopRemoteInjector() {
+  if (!remoteInjector.proc) return { ok: true };
+  try { remoteInjector.proc.kill(); } catch {}
+  remoteInjector.proc = null;
+  remoteInjector.ready = false;
+  return { ok: true };
+}
+
+function injectRemoteCommand(cmd) {
+  if (!remoteInjector.proc || !remoteInjector.proc.stdin.writable) {
+    throw new Error('injector not running');
+  }
+  try {
+    remoteInjector.proc.stdin.write(JSON.stringify(cmd) + '\n');
+  } catch (err) {
+    throw new Error('inject write failed: ' + err.message);
+  }
+}
+
+ipcMain.handle('remote-control:startInjector', () => {
+  try { return startRemoteInjector(); }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+ipcMain.handle('remote-control:stopInjector', () => stopRemoteInjector());
+ipcMain.handle('remote-control:injectorStatus', () => ({
+  running: !!remoteInjector.proc,
+  ready: remoteInjector.ready,
+  screen: remoteInjector.screen,
+  platform: process.platform,
+}));
+ipcMain.handle('remote-control:injectInput', (_e, cmd) => {
+  try { injectRemoteCommand(cmd); return { ok: true }; }
+  catch (err) { return { ok: false, error: err.message }; }
+});
+
+// Make sure the display-media handler is installed before any plugin tries
+// getDisplayMedia(). Wired here (rather than at app.whenReady) so it survives
+// a window recreation triggered by skin-mode toggle — handler lives on the
+// session, not the window.
+ensureDisplayMediaHandler();
+
 // ---------- Central vaults (shared content folders) ----------
 // Each vault is a named directory on the host. Plugins use vault:* IPC
 // (or the legacy notes:* IPC, which routes to the 'notes' vault) to read
@@ -1040,11 +1293,16 @@ async function remoteVault(method, vaultName, op, body, query) {
 }
 
 // Broadcast a vault change to all connected clients via the existing SSE
-// channel, AND notify our own renderer so it can refresh.
-function announceVaultChange(name, op, payload) {
+// channel, AND notify our own renderer so it can refresh. The `device` field
+// is the *originating* device — set to the requester's id for HTTP-routed
+// writes, or to our own deviceId for local writes. Receivers use it to ignore
+// echoes of their own writes (otherwise the SSE round trip remounts the
+// originating plugin and clobbers in-progress edits).
+function announceVaultChange(name, op, payload, originator) {
+  const device = originator || (syncManager ? syncManager.deviceId : 'main');
   const event = {
     kind: 'vault-changed',
-    device: syncManager ? syncManager.deviceId : 'main',
+    device,
     ts: Date.now(),
     name, op, payload,
   };
@@ -1052,12 +1310,12 @@ function announceVaultChange(name, op, payload) {
     try { activityServer.broadcastSync(event); } catch {}
   }
   if (mainWindow && !mainWindow.isDestroyed()) {
-    try { mainWindow.webContents.send('vault:changed', { name, op, payload }); } catch {}
+    try { mainWindow.webContents.send('vault:changed', { name, op, payload, device }); } catch {}
   }
 }
 
 // Subscribe to vault changes so writes through the IPC path get broadcast.
-vaultManager.onChange(({ name, op, payload }) => announceVaultChange(name, op, payload));
+vaultManager.onChange(({ name, op, payload, originator }) => announceVaultChange(name, op, payload, originator));
 
 // ---- vault:* IPC ----
 // On the host (or any disconnected instance), these go straight to the local
@@ -1087,35 +1345,39 @@ ipcMain.handle('vault:read', async (_e, name, p) => {
 });
 
 ipcMain.handle('vault:write', async (_e, name, p, content) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', name, 'write', { path: p, content });
+    await remoteVault('POST', name, 'write', { path: p, content, device: dev });
     return true;
   }
-  return await vaultManager.write(name, p, content);
+  return await vaultManager.write(name, p, content, dev);
 });
 
 ipcMain.handle('vault:mkdir', async (_e, name, p) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', name, 'mkdir', { path: p });
+    await remoteVault('POST', name, 'mkdir', { path: p, device: dev });
     return true;
   }
-  return await vaultManager.mkdir(name, p);
+  return await vaultManager.mkdir(name, p, dev);
 });
 
 ipcMain.handle('vault:rename', async (_e, name, from, to) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', name, 'rename', { from, to });
+    await remoteVault('POST', name, 'rename', { from, to, device: dev });
     return true;
   }
-  return await vaultManager.rename(name, from, to);
+  return await vaultManager.rename(name, from, to, dev);
 });
 
 ipcMain.handle('vault:delete', async (_e, name, p) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', name, 'delete', { path: p });
+    await remoteVault('POST', name, 'delete', { path: p, device: dev });
     return true;
   }
-  return await vaultManager.delete(name, p);
+  return await vaultManager.delete(name, p, dev);
 });
 
 // Push live events to the renderer for the Host tab's live tail.
@@ -1248,27 +1510,30 @@ ipcMain.handle('notes:list', async () => {
 });
 
 ipcMain.handle('notes:write', async (_e, p, body) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', 'notes', 'write', { path: p, content: body });
+    await remoteVault('POST', 'notes', 'write', { path: p, content: body, device: dev });
     return true;
   }
-  return await vaultManager.write('notes', p, body);
+  return await vaultManager.write('notes', p, body, dev);
 });
 
 ipcMain.handle('notes:rename', async (_e, from, to) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', 'notes', 'rename', { from, to });
+    await remoteVault('POST', 'notes', 'rename', { from, to, device: dev });
     return true;
   }
-  return await vaultManager.rename('notes', from, to);
+  return await vaultManager.rename('notes', from, to, dev);
 });
 
 ipcMain.handle('notes:delete', async (_e, p) => {
+  const dev = syncManager.deviceId;
   if (isClientConnected()) {
-    await remoteVault('POST', 'notes', 'delete', { path: p });
+    await remoteVault('POST', 'notes', 'delete', { path: p, device: dev });
     return true;
   }
-  return await vaultManager.delete('notes', p);
+  return await vaultManager.delete('notes', p, dev);
 });
 
 ipcMain.handle('notes:openFolder', async () => {
@@ -2141,6 +2406,7 @@ app.whenReady().then(async () => {
 
 app.on('will-quit', () => {
   globalShortcut.unregisterAll();
+  try { stopRemoteInjector(); } catch {}
 });
 
 app.on('window-all-closed', () => {

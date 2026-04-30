@@ -37,13 +37,13 @@ That's it. Save it as `plugins/hello.jsx` and it appears in the grid.
 export default {
   id: 'unique-id',          // optional. defaults to filename/folder name
   name: 'Display Name',     // shown in widget header
-  width: 1,                 // initial grid units wide  (1–4, default 1)
-  height: 1,                // initial grid units tall  (1–8, default 1)
+  width: 1,                 // initial grid units wide  (1–6, default 1)
+  height: 1,                // initial grid units tall  (1–12, default 1)
   component: ({ ... }) => { /* React element */ },
 };
 ```
 
-The grid is 4 columns wide. A 2×2 widget takes a quarter of the screen.
+The grid is **6 columns wide and the cells are square** (row height tracks column width at runtime, so 1×1 is always a perfect square at any window size). A 1×1 widget covers ~1/36 of the visible area at typical window widths; a 2×2 covers ~1/9. Plan for square content — pick widths and heights with the same aspect ratio you want the widget to have.
 
 > `width` and `height` are *initial* sizes. Once the user drags the corner handle to resize a widget, that override is saved per-plugin in localStorage and used instead. Dragging the widget header reorders it. Use the **⟲ reset layout** toolbar button to clear all overrides.
 
@@ -176,7 +176,7 @@ Copy-paste this template into a chat:
 
 > Build a dashboard plugin called **`<name>`** that does `<one-sentence behavior>`.
 >
-> - Width: `<1–4>`  Height: `<1–4>`
+> - Width: `<1–6>`  Height: `<1–12>`  (cells are square)
 > - State persists across reloads: `<yes/no>`
 > - Uses the helper classes (`p-mono`, `p-accent`, etc.) for styling
 > - Save it to `plugins/<name>/plugin.jsx`
@@ -198,8 +198,8 @@ Claude already knows the spec from this file. Examples:
 //
 // id       — stable identifier; if omitted, derived from filename/folder
 // name     — shown in the widget header
-// width    — 1..4 grid columns (default 1)
-// height   — 1..4 grid rows (default 1)
+// width    — 1..6 grid columns (default 1) · cells are square
+// height   — 1..12 grid rows (default 1)
 // component — React function component; receives hooks as props
 
 const STORAGE_KEY = 'plugin:example:state';

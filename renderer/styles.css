@@ -181,11 +181,43 @@ body.no-scanlines .scanlines { display: none; }
 .grid {
   flex: 1;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  grid-auto-rows: 200px;
-  gap: 14px;
+  /* 6 narrow columns + zero-gap = small square cells, finer resize granularity.
+   * --cell-h is set live by the renderer (ResizeObserver) to match cellWidth
+   * so 1×1 plugins are always perfect squares at any window width. The 200px
+   * fallback only applies before the renderer has run. */
+  grid-template-columns: repeat(6, 1fr);
+  grid-auto-rows: var(--cell-h, 200px);
+  gap: 0;
   padding: 18px 22px;
   overflow-y: auto;
+
+  /* Snap-grid dots — single layer at every cell corner. With gap: 0 the
+   * tile period collapses to (cellW, cellH) and the pattern naturally
+   * lands on every cell corner including the right edge of the grid (no
+   * second layer needed). Tile size is divided by --snap-density so 2×
+   * fills half-cells, 4× quarter-cells, etc.
+   *   cellW = (100% - 44px) / 6     (subtract horizontal padding only)
+   *   cellH = var(--cell-h)         (matches cellW; set live from JS)
+   * `at 0 0` anchors each dot at its tile's top-left so it lands on the
+   * actual cell corner. background-clip: content-box keeps any wrapped
+   * tiles out of the padding strips.
+   */
+  background-image: radial-gradient(
+    circle var(--snap-dot-size, 2px) at 0 0,
+    rgba(var(--accent-rgb), var(--snap-dot-opacity, 0.28)) 50%,
+    transparent 51%
+  );
+  background-size:
+    calc(((100% - 44px) / 6) / var(--snap-density, 1))
+    calc(var(--cell-h, 200px) / var(--snap-density, 1));
+  background-position: 22px 18px;
+  background-repeat: repeat;
+  background-attachment: local;
+  background-clip: content-box;
+}
+/* Hide dots in maximized mode — only the maximized widget is shown, no grid */
+.grid.grid--maximized {
+  background-image: none;
 }
 
 .widget {
@@ -322,19 +354,38 @@ body.no-scanlines .scanlines { display: none; }
   min-height: 100%;
 }
 
-/* Resize handle (bottom-right corner) */
+/* Resize handles (bottom corners). Bottom-right resizes width + height
+ * normally; bottom-left resizes width + height while keeping the right
+ * edge anchored, so the widget grows/shrinks toward the left. */
 .widget-resize {
   position: absolute;
-  right: 0;
   bottom: 0;
   width: 18px;
   height: 18px;
-  cursor: nwse-resize;
   z-index: 3;
   opacity: 0.4;
   transition: opacity 0.15s ease;
+}
+.widget-resize.br {
+  right: 0;
+  cursor: nwse-resize;
   background:
     linear-gradient(135deg,
+      transparent 0,
+      transparent 8px,
+      var(--accent) 8px,
+      var(--accent) 9px,
+      transparent 9px,
+      transparent 12px,
+      var(--accent) 12px,
+      var(--accent) 13px,
+      transparent 13px);
+}
+.widget-resize.bl {
+  left: 0;
+  cursor: nesw-resize;
+  background:
+    linear-gradient(45deg,
       transparent 0,
       transparent 8px,
       var(--accent) 8px,
@@ -350,7 +401,9 @@ body.no-scanlines .scanlines { display: none; }
 
 .widget-body {
   flex: 1;
-  padding: 14px;
+  /* Slightly larger inner padding compensates for gap: 0 — keeps plugin
+   * content from sitting flush against neighbouring widgets' borders. */
+  padding: 18px;
   overflow: auto;
   position: relative;
   z-index: 1;
@@ -1672,13 +1725,220 @@ body[data-font="serif"] { --mono: Georgia, 'Iowan Old Style', 'Palatino Linotype
 }
 .greeting-text {
   font-family: var(--mono);
-  font-size: clamp(28px, 6vw, 72px);
+  /* Base size scaled by --greeting-scale (set inline by the renderer from
+   * the slider in Settings → Display). 1.0 = the original clamp range. */
+  font-size: calc(clamp(28px, 6vw, 72px) * var(--greeting-scale, 1));
   letter-spacing: 0.06em;
   color: var(--accent);
   text-shadow: var(--glow);
   text-align: center;
   max-width: 90%;
   word-break: break-word;
+  /* Make transform animations rotate/scale around the text's own center */
+  display: inline-block;
+  transform-origin: center center;
+}
+
+/* Animation variants. Each runs an intro fade for the first ~600ms (so the
+ * greeting doesn't pop in cold) layered with an INFINITE motion loop that
+ * keeps the text alive while it's on screen. The greeting unmounts at the
+ * 30 s session timeout, so these never run forever. */
+.greeting-anim-none {
+  animation: greet-fade-in 600ms ease-out both;
+}
+.greeting-anim-float {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-float 4.5s ease-in-out infinite;
+}
+.greeting-anim-drift {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-drift 6s ease-in-out infinite;
+}
+.greeting-anim-pulse {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-pulse 3.2s ease-in-out infinite;
+}
+.greeting-anim-wobble {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-wobble 5s ease-in-out infinite;
+}
+.greeting-anim-bounce {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-bounce 1.8s cubic-bezier(.36,.07,.19,.97) infinite;
+}
+.greeting-anim-glow {
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-glow 2.6s ease-in-out infinite;
+}
+.greeting-anim-glitch {
+  position: relative;
+  animation:
+    greet-fade-in 600ms ease-out both,
+    greet-glitch 2.6s steps(1, end) infinite;
+}
+.greeting-anim-glitch::before,
+.greeting-anim-glitch::after {
+  content: attr(data-text);
+  position: absolute;
+  top: 0; left: 0;
+  width: 100%;
+  pointer-events: none;
+}
+.greeting-anim-glitch::before {
+  color: rgba(var(--accent-rgb), 0.7);
+  mix-blend-mode: screen;
+  animation: greet-glitch-a 2.6s steps(1, end) infinite;
+}
+.greeting-anim-glitch::after {
+  color: rgba(255, 80, 80, 0.6);
+  mix-blend-mode: screen;
+  animation: greet-glitch-b 2.6s steps(1, end) infinite;
+}
+
+@keyframes greet-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes greet-float {
+  0%, 100% { transform: translateY(-6px); }
+  50%      { transform: translateY(6px); }
+}
+@keyframes greet-drift {
+  0%, 100% { transform: translateX(-10px); }
+  50%      { transform: translateX(10px); }
+}
+@keyframes greet-pulse {
+  0%, 100% { transform: scale(0.97); }
+  50%      { transform: scale(1.04); text-shadow: 0 0 14px rgba(var(--accent-rgb), 0.7), 0 0 4px var(--accent); }
+}
+@keyframes greet-wobble {
+  0%, 100% { transform: rotate(-2deg); }
+  50%      { transform: rotate(2deg); }
+}
+@keyframes greet-bounce {
+  0%, 100%       { transform: translateY(0); }
+  20%            { transform: translateY(-14px); }
+  40%            { transform: translateY(0); }
+  55%            { transform: translateY(-6px); }
+  70%            { transform: translateY(0); }
+}
+@keyframes greet-glow {
+  0%, 100% { text-shadow: var(--glow); opacity: 0.92; }
+  50%      { text-shadow: 0 0 18px rgba(var(--accent-rgb), 0.85), 0 0 4px var(--accent); opacity: 1; }
+}
+@keyframes greet-glitch {
+  0%, 92%, 100% { transform: translate(0, 0); }
+  93%           { transform: translate(-1px, 1px); }
+  95%           { transform: translate(2px, -1px); }
+  97%           { transform: translate(-2px, 0); }
+}
+@keyframes greet-glitch-a {
+  0%, 92%, 100% { transform: translate(-2px, -1px); }
+  93%           { transform: translate(-3px, 0); clip-path: inset(20% 0 30% 0); }
+  95%           { transform: translate(-1px, -2px); clip-path: inset(60% 0 5% 0); }
+  97%           { transform: translate(-3px, 1px); clip-path: inset(10% 0 70% 0); }
+}
+@keyframes greet-glitch-b {
+  0%, 92%, 100% { transform: translate(2px, 1px); }
+  93%           { transform: translate(3px, -1px); clip-path: inset(40% 0 10% 0); }
+  95%           { transform: translate(1px, 2px); clip-path: inset(0 0 80% 0); }
+  97%           { transform: translate(3px, -1px); clip-path: inset(70% 0 0 0); }
+}
+
+/* ---------- Segmented Picker (Settings → Display) ---------- */
+.set-row.set-row-col {
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+}
+.set-row.is-disabled .set-label,
+.set-row.is-disabled .pick-row { opacity: 0.5; }
+.pick-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.pick-opt {
+  background: transparent;
+  border: 1px solid var(--border-bright);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 4px 10px;
+  cursor: pointer;
+  border-radius: 3px;
+  transition: all 0.1s ease;
+  min-width: 38px;
+}
+.pick-opt:hover:not(:disabled) {
+  color: var(--fg);
+  border-color: var(--accent);
+}
+.pick-opt.active {
+  background: rgba(var(--accent-rgb), 0.12);
+  color: var(--accent);
+  border-color: var(--accent);
+  text-shadow: var(--glow);
+}
+.pick-opt:disabled { cursor: not-allowed; }
+
+/* ---------- Slider ---------- */
+.slider-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+}
+.slider {
+  flex: 1;
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(var(--accent-rgb), 0.18);
+  border-radius: 2px;
+  outline: none;
+  cursor: pointer;
+  margin: 0;
+}
+.slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid rgba(0,0,0,0.3);
+  box-shadow: var(--glow-soft);
+  cursor: pointer;
+  transition: transform 0.1s ease;
+}
+.slider::-webkit-slider-thumb:hover { transform: scale(1.15); }
+.slider::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 1px solid rgba(0,0,0,0.3);
+  box-shadow: var(--glow-soft);
+  cursor: pointer;
+}
+.slider:disabled { opacity: 0.4; cursor: not-allowed; }
+.slider:disabled::-webkit-slider-thumb { cursor: not-allowed; }
+.slider-val {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  min-width: 56px;
+  text-align: right;
 }
 
 /* ---------- Notification badge dot (auto-update available) ---------- */
